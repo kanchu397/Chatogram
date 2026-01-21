@@ -44,6 +44,52 @@ def add_premium(user_id, delta):
         WHERE user_id=%s
     """, (delta, user_id))
 
+# ================= HANDELRS =================
+    
+ @dp.message_handler(text="⚙ Settings")
+async def settings_menu(message: types.Message):
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("✏ Edit Profile")
+    kb.add("⬅ Back")
+
+    await message.answer(
+        "⚙ *Settings*\nChoose an option:",
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
+
+@dp.message_handler(text="⬅ Back")
+async def back_to_main(message: types.Message):
+    await message.answer(
+        "⬅ Back to main menu",
+        reply_markup=main_menu
+    )
+
+@dp.message_handler(commands=["profile"])
+async def slash_profile(message: types.Message):
+    await profile(message)
+
+@dp.message_handler(commands=["premium"])
+async def slash_premium(message: types.Message):
+    await premium(message)
+
+@dp.message_handler(commands=["rules"])
+async def slash_rules(message: types.Message):
+    await rules(message)
+
+@dp.message_handler(commands=["invite"])
+async def slash_invite(message: types.Message):
+    await invite(message)
+
+@dp.message_handler(commands=["settings"])
+async def slash_settings(message: types.Message):
+    await settings_menu(message)
+
+@dp.message_handler(commands=["find"])
+async def slash_find(message: types.Message):
+    await find_chat(message)
+       
+
 # ================= MENUS =================
 
 main_menu = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -143,7 +189,7 @@ async def next_chat(message: types.Message):
 async def premium(message: types.Message):
     kb = InlineKeyboardMarkup()
     kb.add(
-        InlineKeyboardButton("⭐ 7 Days – 50 Stars", callback_data="buy_7"),
+        InlineKeyboardButton("⭐ 7 Days – 30 Stars", callback_data="buy_7"),
         InlineKeyboardButton("⭐ 30 Days – 150 Stars", callback_data="buy_30")
     )
     await message.answer("Upgrade to Premium", reply_markup=kb)
@@ -215,5 +261,20 @@ async def ban(message: types.Message):
 
 # ================= RUN =================
 
+async def set_commands(dp):
+    await bot.set_my_commands([
+        types.BotCommand("start", "Start the bot"),
+        types.BotCommand("find", "Find a random chat"),
+        types.BotCommand("profile", "View your profile"),
+        types.BotCommand("premium", "Buy premium"),
+        types.BotCommand("invite", "Invite friends & earn"),
+        types.BotCommand("rules", "Bot rules"),
+        types.BotCommand("settings", "Profile & settings"),
+    ])
+
 if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True)
+    executor.start_polling(
+        dp,
+        skip_updates=True,
+        on_startup=set_commands
+    )   
