@@ -18,10 +18,11 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 user_edit_state = {}
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
+onboarding_state = {}
 
 logging.basicConfig(level=logging.INFO)
 
-# ================= DB =================
+# ================= DB =====================
 
 conn = psycopg2.connect(DATABASE_URL)
 conn.autocommit = True
@@ -138,31 +139,31 @@ chat_menu.add("⏭ Next", "⛔ Stop")
 
 @dp.message_handler(commands=["start"])
 async def start_cmd(message: types.Message):
-    ref = message.get_args()
     uid = message.from_user.id
+    username = message.from_user.username
 
+    cur.execute("SELECT age FROM users WHERE user_id=%s", (uid,))
+    user = cur.fetchone()
+
+    if user and user[0] is not None:
+        # Existing user
+        await message.answer(
+            "👋 Welcome back to *Chatogram*",
+            reply_markup=main_menu,
+            parse_mode="Markdown"
+        )
+        return
+
+    # New user → insert if not exists
     cur.execute("""
         INSERT INTO users (user_id, username)
         VALUES (%s, %s)
         ON CONFLICT (user_id) DO NOTHING
-    """, (uid, message.from_user.username))
+    """, (uid, username))
 
-    if ref:
-        cur.execute("""
-            UPDATE users
-            SET referrals = referrals + 1
-            WHERE user_id = %s
-        """, (ref,))
-        cur.execute("""
-            SELECT referrals FROM users WHERE user_id=%s
-        """, (ref,))
-        r = cur.fetchone()[0]
-        if r == 3:
-            add_premium(ref, timedelta(hours=3))
-
+    onboarding_state[uid] = "age"
     await message.answer(
-        "👋 Welcome to *Chatogram*\nWhere Strangers Become Voices",
-        reply_markup=main_menu,
+        "👋 Welcome to *Chatogram*\n\nLet’s set up your profile.\n\n📌 Enter your *age*:",
         parse_mode="Markdown"
     )
 
@@ -305,6 +306,38 @@ async def ban(message: types.Message):
     uid = int(message.get_args())
     cur.execute("UPDATE users SET banned=true WHERE user_id=%s", (uid,))
     await message.answer("🚫 User banned")
+
+@dp.message_handler(lambda m: m.from_user.id in onboarding_state)
+async def onboarding_handler(message: types.Message):
+    uid = message.from_user.id
+    step = onboarding_state[uid]
+    text = message.text.strip()
+
+    if step == "age":
+        if not text.isdigit() or not (13 <= int(text) <= 80):
+            return await message.answer("❌ Enter a valid age (13–80):")
+        cur.execute("UPDATE users SET age=%s WHERE user_id=%s", (int(text), uid))
+        onboarding_state[uid] = "gender"
+        return await message.answer("👤 Enter your gender:")
+
+    if step == "gender":
+        cur.execute("UPDATE users SET gender=%s WHERE user_id=%s", (text, uid))
+        onboarding_state[uid] = "city"
+        return await message.answer("🏙 Enter your city:")
+
+    if step == "city":
+        cur.execute("UPDATE users SET city=%s WHERE user_id=%s", (text, uid))
+        onboarding_state[uid] = "country"
+        return await message.answer("🌍 Enter your country:")
+
+    if step == "country":
+        cur.execute("UPDATE users SET country=%s WHERE user_id=%s", (text, uid))
+        onboarding_state.pop(uid)
+
+        await message.answer(
+            "✅ Profile setup complete!\n\nYou can now start chatting 🎉",
+            reply_markup=main_menu
+        )
 
 # ================= RUN =================
 
