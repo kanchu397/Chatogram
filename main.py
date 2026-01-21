@@ -1,237 +1,208 @@
-import os
 import logging
+import os
 import psycopg2
-from psycopg2.extras import RealDictCursor
 from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, executor, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from dotenv import load_dotenv
+from aiogram.types import (
+    ReplyKeyboardMarkup, KeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    LabeledPrice, PreCheckoutQuery, ContentType
+)
 
-# ---------------- ENV ----------------
-load_dotenv()
+# ================= CONFIG =================
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 DATABASE_URL = os.getenv("DATABASE_URL")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-if not BOT_TOKEN or not DATABASE_URL:
-    raise RuntimeError("Missing BOT_TOKEN or DATABASE_URL")
-
-# ---------------- LOG ----------------
-logging.basicConfig(level=logging.INFO)
-
-# ---------------- BOT ----------------
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
 
-# ---------------- DB ----------------
-conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+logging.basicConfig(level=logging.INFO)
+
+# ================= DB =================
+
+conn = psycopg2.connect(DATABASE_URL)
+conn.autocommit = True
 cur = conn.cursor()
 
-# ---------------- STATE ----------------
-waiting_users = []
-active_chats = {}
-editing = {}
+# ================= HELPERS =================
 
-# ---------------- KEYBOARDS ----------------
+def is_premium(user_id):
+    cur.execute(
+        "SELECT premium_until FROM users WHERE user_id=%s",
+        (user_id,)
+    )
+    row = cur.fetchone()
+    return row and row[0] and row[0] > datetime.utcnow()
+
+def add_premium(user_id, delta):
+    cur.execute("""
+        UPDATE users
+        SET premium_until = COALESCE(premium_until, NOW()) + %s
+        WHERE user_id=%s
+    """, (delta, user_id))
+
+# ================= MENUS =================
+
 main_menu = ReplyKeyboardMarkup(resize_keyboard=True)
-main_menu.add("🔍 Find Chat", "👨 Find a Man", "👩 Find a Woman")
-main_menu.add("👤 Profile", "✏ Edit Profile")
-main_menu.add("⭐ Premium", "🎁 Invite & Earn", "📜 Rules")
+main_menu.add("🔍 Find Chat")
+main_menu.add("👨 Find a Man", "👩 Find a Woman")
+main_menu.add("⭐ Premium", "👤 Profile")
+main_menu.add("🎁 Invite & Earn", "📜 Rules")
+main_menu.add("⚙ Settings")
 
 chat_menu = ReplyKeyboardMarkup(resize_keyboard=True)
-chat_menu.add("⏹ Stop", "⏭ Next")
+chat_menu.add("⏭ Next", "⛔ Stop")
 
-# ---------------- HELPERS ----------------
-def get_user(uid):
-    cur.execute("SELECT * FROM users WHERE user_id=%s", (uid,))
-    return cur.fetchone()
+# ================= START =================
 
-def has_premium(user):
-    if user["premium_until"] and user["premium_until"] > datetime.utcnow():
-        return True
-    return False
-
-# ---------------- START ----------------
 @dp.message_handler(commands=["start"])
-async def start(message: types.Message):
+async def start_cmd(message: types.Message):
+    ref = message.get_args()
     uid = message.from_user.id
-    username = message.from_user.username
 
     cur.execute("""
-    INSERT INTO users (user_id, username, premium_until)
-    VALUES (%s, %s, NOW() + INTERVAL '2 HOURS')
-    ON CONFLICT (user_id) DO NOTHING
-    """, (uid, username))
-    conn.commit()
+        INSERT INTO users (user_id, username)
+        VALUES (%s, %s)
+        ON CONFLICT (user_id) DO NOTHING
+    """, (uid, message.from_user.username))
 
-    # referral
-    args = message.get_args()
-    if args.startswith("ref_"):
-        try:
-            ref = int(args.split("_")[1])
-            if ref != uid:
-                cur.execute("UPDATE users SET referrals = referrals + 1 WHERE user_id=%s", (ref,))
-                conn.commit()
-        except:
-            pass
+    if ref:
+        cur.execute("""
+            UPDATE users
+            SET referrals = referrals + 1
+            WHERE user_id = %s
+        """, (ref,))
+        cur.execute("""
+            SELECT referrals FROM users WHERE user_id=%s
+        """, (ref,))
+        r = cur.fetchone()[0]
+        if r == 3:
+            add_premium(ref, timedelta(hours=3))
 
     await message.answer(
-        "👋 Welcome to *Chatogram*\n🆓 2 hours FREE premium",
+        "👋 Welcome to *Chatogram*\nWhere Strangers Become Voices",
         reply_markup=main_menu,
         parse_mode="Markdown"
     )
 
-# ---------------- PROFILE ----------------
-@dp.message_handler(lambda m: m.text == "👤 Profile")
+# ================= PROFILE =================
+
+@dp.message_handler(text="👤 Profile")
 async def profile(message: types.Message):
-    u = get_user(message.from_user.id)
-    star = "⭐" if has_premium(u) else ""
+    uid = message.from_user.id
+    cur.execute("""
+        SELECT age, gender, city, country, premium_until
+        FROM users WHERE user_id=%s
+    """, (uid,))
+    row = cur.fetchone()
 
+    star = "⭐" if is_premium(uid) else ""
     await message.answer(
-        f"👤 Profile {star}\n\n"
-        f"Age: {u['age']}\n"
-        f"Gender: {u['gender']}\n"
-        f"City: {u['city']}\n"
-        f"Country: {u['country']}\n"
-        f"Premium: {'Yes' if has_premium(u) else 'No'}"
+        f"{star} *Your Profile*\n"
+        f"Age: {row[0]}\n"
+        f"Gender: {row[1]}\n"
+        f"City: {row[2]}\n"
+        f"Country: {row[3]}",
+        parse_mode="Markdown"
     )
 
-# ---------------- EDIT PROFILE (SIMPLE) ----------------
-@dp.message_handler(lambda m: m.text == "✏ Edit Profile")
-async def edit_start(message: types.Message):
-    editing[message.from_user.id] = "age"
-    await message.answer("Enter age:")
+# ================= FIND CHAT =================
 
-@dp.message_handler()
-async def edit_flow(message: types.Message):
-    uid = message.from_user.id
-
-    # editing flow
-    if uid in editing:
-        step = editing[uid]
-
-        if step == "age":
-            cur.execute("UPDATE users SET age=%s WHERE user_id=%s", (message.text, uid))
-            editing[uid] = "gender"
-            await message.answer("Enter gender (male/female):")
-
-        elif step == "gender":
-            cur.execute("UPDATE users SET gender=%s WHERE user_id=%s", (message.text.lower(), uid))
-            editing[uid] = "city"
-            await message.answer("Enter city:")
-
-        elif step == "city":
-            cur.execute("UPDATE users SET city=%s WHERE user_id=%s", (message.text, uid))
-            editing[uid] = "country"
-            await message.answer("Enter country:")
-
-        elif step == "country":
-            cur.execute("UPDATE users SET country=%s WHERE user_id=%s", (message.text, uid))
-            editing.pop(uid)
-            await message.answer("✅ Profile updated", reply_markup=main_menu)
-
-        conn.commit()
-        return
-
-    # relay chat
-    if uid in active_chats:
-        partner = active_chats.get(uid)
-        if partner:
-            await bot.send_message(partner, message.text)
-        return
-
-    await message.answer("Use menu 👇", reply_markup=main_menu)
-
-# ---------------- CHAT ----------------
-@dp.message_handler(lambda m: m.text == "🔍 Find Chat")
+@dp.message_handler(text="🔍 Find Chat")
 async def find_chat(message: types.Message):
-    uid = message.from_user.id
-    if uid in waiting_users or uid in active_chats:
-        return
+    await message.answer("🔄 Searching for a match...", reply_markup=chat_menu)
 
-    if waiting_users:
-        p = waiting_users.pop(0)
-        active_chats[uid] = p
-        active_chats[p] = uid
-        await bot.send_message(uid, "✅ Connected", reply_markup=chat_menu)
-        await bot.send_message(p, "✅ Connected", reply_markup=chat_menu)
-    else:
-        waiting_users.append(uid)
-        await message.answer("⏳ Searching...")
+@dp.message_handler(text="👨 Find a Man")
+async def find_man(message: types.Message):
+    if not is_premium(message.from_user.id):
+        return await message.answer("⭐ Subscribe to Premium")
+    await message.answer("🔄 Finding a man...", reply_markup=chat_menu)
 
-@dp.message_handler(lambda m: m.text in ["👨 Find a Man", "👩 Find a Woman"])
-async def gender_match(message: types.Message):
-    uid = message.from_user.id
-    u = get_user(uid)
+@dp.message_handler(text="👩 Find a Woman")
+async def find_woman(message: types.Message):
+    if not is_premium(message.from_user.id):
+        return await message.answer("⭐ Subscribe to Premium")
+    await message.answer("🔄 Finding a woman...", reply_markup=chat_menu)
 
-    if not has_premium(u):
-        await message.answer("⭐ Premium required")
-        return
+# ================= CHAT CONTROLS =================
 
-    target = "male" if "Man" in message.text else "female"
-
-    for w in waiting_users:
-        cur.execute("SELECT gender FROM users WHERE user_id=%s", (w,))
-        g = cur.fetchone()
-        if g and g["gender"] == target:
-            waiting_users.remove(w)
-            active_chats[uid] = w
-            active_chats[w] = uid
-            await bot.send_message(uid, "✅ Connected", reply_markup=chat_menu)
-            await bot.send_message(w, "✅ Connected", reply_markup=chat_menu)
-            return
-
-    waiting_users.append(uid)
-    await message.answer("⏳ Searching premium match...")
-
-@dp.message_handler(lambda m: m.text == "⏹ Stop")
+@dp.message_handler(text="⛔ Stop")
 async def stop_chat(message: types.Message):
-    uid = message.from_user.id
-    p = active_chats.pop(uid, None)
-    if p:
-        active_chats.pop(p, None)
-        await bot.send_message(p, "❌ Partner left", reply_markup=main_menu)
-    await message.answer("❌ Chat stopped", reply_markup=main_menu)
+    await message.answer("❌ Chat ended", reply_markup=main_menu)
 
-@dp.message_handler(lambda m: m.text == "⏭ Next")
+@dp.message_handler(text="⏭ Next")
 async def next_chat(message: types.Message):
-    await stop_chat(message)
-    await find_chat(message)
+    await message.answer("🔄 Finding next chat...", reply_markup=chat_menu)
 
-# ---------------- PREMIUM ----------------
-@dp.message_handler(lambda m: m.text == "⭐ Premium")
+# ================= PREMIUM =================
+
+@dp.message_handler(text="⭐ Premium")
 async def premium(message: types.Message):
-    await message.answer(
-        "⭐ Premium ₹49 / 7 days\n\n"
-        "UPI:\nupi://pay?pa=yourupi@upi&pn=Chatogram&am=49\n\n"
-        "After payment, send screenshot to admin."
+    kb = InlineKeyboardMarkup()
+    kb.add(
+        InlineKeyboardButton("⭐ 7 Days – 50 Stars", callback_data="buy_7"),
+        InlineKeyboardButton("⭐ 30 Days – 150 Stars", callback_data="buy_30")
+    )
+    await message.answer("Upgrade to Premium", reply_markup=kb)
+
+@dp.callback_query_handler(lambda c: c.data.startswith("buy_"))
+async def buy(callback: types.CallbackQuery):
+    days = 7 if callback.data == "buy_7" else 30
+    stars = 50 if days == 7 else 150
+
+    await bot.send_invoice(
+        callback.message.chat.id,
+        title="Chatogram Premium ⭐",
+        description=f"Premium access for {days} days",
+        payload=f"premium_{days}",
+        provider_token="",
+        currency="XTR",
+        prices=[LabeledPrice("Premium", stars)]
     )
 
-# ---------------- INVITE ----------------
-@dp.message_handler(lambda m: m.text == "🎁 Invite & Earn")
+@dp.pre_checkout_query_handler(lambda q: True)
+async def pre_checkout(q: PreCheckoutQuery):
+    await bot.answer_pre_checkout_query(q.id, ok=True)
+
+@dp.message_handler(content_types=ContentType.SUCCESSFUL_PAYMENT)
+async def success_payment(message: types.Message):
+    payload = message.successful_payment.invoice_payload
+    days = int(payload.split("_")[1])
+    add_premium(message.from_user.id, timedelta(days=days))
+    await message.answer("⭐ Premium Activated!", reply_markup=main_menu)
+
+# ================= INVITE =================
+
+@dp.message_handler(text="🎁 Invite & Earn")
 async def invite(message: types.Message):
-    me = await bot.get_me()
+    link = f"https://t.me/{(await bot.get_me()).username}?start={message.from_user.id}"
     await message.answer(
-        f"Invite link:\nhttps://t.me/{me.username}?start=ref_{message.from_user.id}"
+        f"Invite friends:\n{link}\n\n"
+        "🎁 3 referrals = 3 hours premium"
     )
 
-# ---------------- RULES ----------------
-@dp.message_handler(lambda m: m.text == "📜 Rules")
-async def rules(message: types.Message):
-    await message.answer("Be respectful. No spam. No NSFW.")
+# ================= RULES =================
 
-# ---------------- ADMIN ----------------
+@dp.message_handler(text="📜 Rules")
+async def rules(message: types.Message):
+    await message.answer(
+        "1️⃣ No abuse\n"
+        "2️⃣ No spam\n"
+        "3️⃣ No illegal content\n"
+        "4️⃣ Respect privacy"
+    )
+
+# ================= ADMIN =================
+
 @dp.message_handler(commands=["addpremium"])
-async def add_premium(message: types.Message):
+async def addpremium(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
     uid = int(message.get_args())
-    cur.execute(
-        "UPDATE users SET premium_until = NOW() + INTERVAL '7 DAYS' WHERE user_id=%s",
-        (uid,)
-    )
-    conn.commit()
+    add_premium(uid, timedelta(days=30))
     await message.answer("✅ Premium added")
 
 @dp.message_handler(commands=["ban"])
@@ -239,10 +210,10 @@ async def ban(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
     uid = int(message.get_args())
-    cur.execute("UPDATE users SET banned=TRUE WHERE user_id=%s", (uid,))
-    conn.commit()
+    cur.execute("UPDATE users SET banned=true WHERE user_id=%s", (uid,))
     await message.answer("🚫 User banned")
 
-# ---------------- RUN ----------------
+# ================= RUN =================
+
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
