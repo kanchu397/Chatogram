@@ -1,9 +1,6 @@
-print("DEBUG URL:", SUPABASE_URL)
-print("DEBUG KEY PREFIX:", SUPABASE_KEY[:20])
-print("DEBUG KEY LENGTH:", len(SUPABASE_KEY))
 
 # ================= CHATOGRAM – FULL FINAL BUILD ================= #
-
+from db import add_user, get_user, grant_premium, is_premium
 import os
 import asyncio
 from datetime import datetime, timezone, timedelta
@@ -12,7 +9,6 @@ from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from dotenv import load_dotenv
-from supabase import create_client
 
 # ================= ENV ================= #
 
@@ -20,8 +16,6 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 UPI_ID = "kanchit.tiwari@ibl"   # CHANGE
 UPI_NAME = "Kanchit Tiwari"
