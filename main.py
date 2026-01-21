@@ -1,3 +1,7 @@
+print("DEBUG URL:", SUPABASE_URL)
+print("DEBUG KEY PREFIX:", SUPABASE_KEY[:20])
+print("DEBUG KEY LENGTH:", len(SUPABASE_KEY))
+
 # ================= CHATOGRAM – FULL FINAL BUILD ================= #
 
 import os
