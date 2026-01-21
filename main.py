@@ -46,7 +46,7 @@ def add_premium(user_id, delta):
 
 # ================= HANDELRS =================
     
- @dp.message_handler(text="⚙ Settings")
+@dp.message_handler(text="⚙ Settings")
 async def settings_menu(message: types.Message):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("✏ Edit Profile")
