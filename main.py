@@ -15,7 +15,7 @@ from aiogram.types import (
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 DATABASE_URL = os.getenv("DATABASE_URL")
-
+user_edit_state = {}
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
 
@@ -89,6 +89,38 @@ async def slash_settings(message: types.Message):
 async def slash_find(message: types.Message):
     await find_chat(message)
        
+@dp.message_handler(text="✏ Edit Profile")
+async def edit_profile_entry(message: types.Message):
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("✏ Edit Age", "✏ Edit Gender")
+    kb.add("✏ Edit City", "✏ Edit Country")
+    kb.add("⬅ Back")
+
+    await message.answer(
+        "✏ *Edit Profile*\nWhat do you want to change?",
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
+
+@dp.message_handler(text="✏ Edit Age")
+async def edit_age(message: types.Message):
+    user_edit_state[message.from_user.id] = "age"
+    await message.answer("Enter your age:")
+
+@dp.message_handler(text="✏ Edit Gender")
+async def edit_gender(message: types.Message):
+    user_edit_state[message.from_user.id] = "gender"
+    await message.answer("Enter your gender:")
+
+@dp.message_handler(text="✏ Edit City")
+async def edit_city(message: types.Message):
+    user_edit_state[message.from_user.id] = "city"
+    await message.answer("Enter your city:")
+
+@dp.message_handler(text="✏ Edit Country")
+async def edit_country(message: types.Message):
+    user_edit_state[message.from_user.id] = "country"
+    await message.answer("Enter your country:")
 
 # ================= MENUS =================
 
@@ -242,6 +274,21 @@ async def rules(message: types.Message):
     )
 
 # ================= ADMIN =================
+
+@dp.message_handler(lambda m: m.from_user.id in user_edit_state)
+async def save_profile_edit(message: types.Message):
+    field = user_edit_state.pop(message.from_user.id)
+    value = message.text.strip()
+
+    cur.execute(
+        f"UPDATE users SET {field}=%s WHERE user_id=%s",
+        (value, message.from_user.id)
+    )
+
+    await message.answer(
+        f"✅ {field.capitalize()} updated successfully",
+        reply_markup=main_menu
+    )
 
 @dp.message_handler(commands=["addpremium"])
 async def addpremium(message: types.Message):
