@@ -401,6 +401,37 @@ async def onboarding_handler(message: types.Message):
             "✅ Profile setup complete!\n\nYou can now start chatting 🎉",
             reply_markup=main_menu
         )
+        
+from datetime import timedelta
+
+@dp.message_handler(commands=["addpremium"])
+async def add_premium_admin(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return await message.answer("❌ You are not authorized.")
+
+    parts = message.text.split()
+
+    # Usage: /addpremium <user_id> <days>
+    if len(parts) != 3:
+        return await message.answer(
+            "Usage:\n/addpremium <user_id> <days>\n\nExample:\n/addpremium 123456789 7"
+        )
+
+    try:
+        target_id = int(parts[1])
+        days = int(parts[2])
+    except ValueError:
+        return await message.answer("❌ Invalid user ID or days.")
+
+    cur.execute("""
+        UPDATE users
+        SET premium_until = COALESCE(premium_until, NOW()) + %s * INTERVAL '1 day'
+        WHERE user_id = %s
+    """, (days, target_id))
+
+    await message.answer(
+        f"⭐ Premium granted for {days} days to user {target_id}"
+    )        
 
 # ================= RUN =================
 
