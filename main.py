@@ -123,6 +123,57 @@ async def edit_country(message: types.Message):
     user_edit_state[message.from_user.id] = "country"
     await message.answer("Enter your country:")
 
+def is_premium_user(user_id):
+    cur.execute(
+        "SELECT premium_until FROM users WHERE user_id=%s",
+        (user_id,)
+    )
+    row = cur.fetchone()
+    return row and row[0] and row[0] > datetime.utcnow()
+
+@dp.message_handler(text="👨 Find a Man")
+async def find_man(message: types.Message):
+    uid = message.from_user.id
+
+    if not is_premium_user(uid):
+        return await message.answer("🔒 Subscribe to Premium to use gender matching.")
+
+    cur.execute("""
+        SELECT user_id FROM users
+        WHERE gender ILIKE 'male'
+        AND user_id != %s
+        ORDER BY RANDOM()
+        LIMIT 1
+    """, (uid,))
+
+    partner = cur.fetchone()
+    if not partner:
+        return await message.answer("❌ No users found right now.")
+
+    await connect_users(uid, partner[0])
+
+@dp.message_handler(text="👩 Find a Woman")
+async def find_woman(message: types.Message):
+    uid = message.from_user.id
+
+    if not is_premium_user(uid):
+        return await message.answer("🔒 Subscribe to Premium to use gender matching.")
+
+    cur.execute("""
+        SELECT user_id FROM users
+        WHERE gender ILIKE 'female'
+        AND user_id != %s
+        ORDER BY RANDOM()
+        LIMIT 1
+    """, (uid,))
+
+    partner = cur.fetchone()
+    if not partner:
+        return await message.answer("❌ No users found right now.")
+
+    await connect_users(uid, partner[0])
+
+
 # ================= MENUS =================
 
 main_menu = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -172,21 +223,33 @@ async def start_cmd(message: types.Message):
 @dp.message_handler(text="👤 Profile")
 async def profile(message: types.Message):
     uid = message.from_user.id
+
     cur.execute("""
         SELECT age, gender, city, country, premium_until
-        FROM users WHERE user_id=%s
+        FROM users
+        WHERE user_id=%s
     """, (uid,))
-    row = cur.fetchone()
+    user = cur.fetchone()
 
-    star = "⭐" if is_premium(uid) else ""
-    await message.answer(
-        f"{star} *Your Profile*\n"
-        f"Age: {row[0]}\n"
-        f"Gender: {row[1]}\n"
-        f"City: {row[2]}\n"
-        f"Country: {row[3]}",
-        parse_mode="Markdown"
+    if not user:
+        return await message.answer("❌ Profile not found.")
+
+    age, gender, city, country, premium_until = user
+
+    is_premium = premium_until and premium_until > datetime.utcnow()
+    badge = "⭐ PREMIUM USER\n\n" if is_premium else ""
+
+    text = (
+        f"{badge}"
+        f"👤 *Your Profile*\n"
+        f"Age: {age}\n"
+        f"Gender: {gender}\n"
+        f"City: {city}\n"
+        f"Country: {country}"
     )
+
+    await message.answer(text, parse_mode="Markdown")
+
 
 # ================= FIND CHAT =================
 
@@ -223,7 +286,7 @@ async def premium(message: types.Message):
     kb = InlineKeyboardMarkup()
     kb.add(
         InlineKeyboardButton("⭐ 7 Days – 30 Stars", callback_data="buy_7"),
-        InlineKeyboardButton("⭐ 30 Days – 150 Stars", callback_data="buy_30")
+        InlineKeyboardButton("⭐ 30 Days – 120 Stars", callback_data="buy_30")
     )
     await message.answer("Upgrade to Premium", reply_markup=kb)
 
