@@ -552,7 +552,7 @@ if step == "interests":
     )
     onboarding_state.pop(uid)
 
-    await message.answer(
+await message.answer(
         "✅ Profile setup complete!\n\nYou can now start chatting 🎉",
         reply_markup=main_menu
     )
