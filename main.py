@@ -309,36 +309,31 @@ async def start_cmd(message: types.Message):
 async def profile(message: types.Message):
     uid = message.from_user.id
 
-    cur.execute("""
-        SELECT age, gender, city, country,interests,premium_until
-        FROM users
-        WHERE user_id=%s
-    """, (uid,))
-    user = cur.fetchone()
-    interests_text = (
-    interests.replace(",", ", ")
-    if interests else "Not set")
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT age, gender, city, country, interests, premium_until
+            FROM users WHERE user_id = %s
+        """, (uid,))
+        row = cur.fetchone()
 
-    if not user:
-        return await message.answer("❌ Profile not found.")
+    if not row:
+        await message.answer("❌ Profile not found.")
+        return
 
-    age, gender, city, country, premium_until = user
+    age, gender, city, country, interests, premium_until = row
 
-    is_premium = premium_until and premium_until > datetime.utcnow()
-    badge = "⭐ PREMIUM USER\n\n" if is_premium else ""
+    interests_text = interests if interests else "Not set"
+    premium_badge = " ⭐" if premium_until and premium_until > datetime.utcnow() else ""
 
-    text = (
-    f"{badge}"
-    f"👤 *Your Profile*\n"
-    f"Age: {age}\n"
-    f"Gender: {gender}\n"
-    f"City: {city}\n"
-    f"Country: {country}\n"
-    f"🏷 Interests: {interests_text}"
+    await message.answer(
+        f"👤 *Your Profile{premium_badge}*\n\n"
+        f"🎂 Age: {age}\n"
+        f"⚧ Gender: {gender}\n"
+        f"🏙 City: {city}\n"
+        f"🌍 Country: {country}\n"
+        f"🎯 Interests: {interests_text}",
+        parse_mode="Markdown"
     )
-
-    await message.answer(text, parse_mode="Markdown")
-
 
 # ================= FIND CHAT =================
 
