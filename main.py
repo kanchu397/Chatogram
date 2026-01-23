@@ -293,7 +293,7 @@ async def premium(message: types.Message):
 @dp.callback_query_handler(lambda c: c.data.startswith("buy_"))
 async def buy(callback: types.CallbackQuery):
     days = 7 if callback.data == "buy_7" else 30
-    stars = 50 if days == 7 else 150
+    stars = 30 if days == 7 else 120
 
     await bot.send_invoice(
         callback.message.chat.id,
