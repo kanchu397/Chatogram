@@ -540,8 +540,7 @@ async def onboarding_handler(message: types.Message):
         "🏷 Enter your interests (comma separated)\n"
         "Example: music, movies, sports"
     )
-
-if step == "interests":
+    if step == "interests":
     interests = ",".join(
         [i.strip().lower() for i in text.split(",") if i.strip()]
     )
@@ -551,12 +550,11 @@ if step == "interests":
         (interests, uid)
     )
     onboarding_state.pop(uid)
-
-await message.answer(
+    await message.answer(
         "✅ Profile setup complete!\n\nYou can now start chatting 🎉",
         reply_markup=main_menu
     )
-        
+
 from datetime import timedelta
 
 @dp.message_handler(commands=["addpremium"])
