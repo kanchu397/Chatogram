@@ -140,13 +140,6 @@ async def edit_country(message: types.Message):
     user_edit_state[message.from_user.id] = "country"
     await message.answer("Enter your country:")
 
-def is_premium_user(user_id):
-    cur.execute(
-        "SELECT premium_until FROM users WHERE user_id=%s",
-        (user_id,)
-    )
-    row = cur.fetchone()
-    return row and row[0] and row[0] > datetime.utcnow()
 
 @dp.message_handler(text="✏ Edit Interests")
 async def edit_interests(message: types.Message):
@@ -160,7 +153,7 @@ async def edit_interests(message: types.Message):
 async def find_man(message: types.Message):
     uid = message.from_user.id
 
-    if not is_premium_user(uid):
+    if not is_premium(uid):
         return await message.answer("🔒 Subscribe to Premium to use gender matching.")
 
     cur.execute("""
@@ -182,7 +175,7 @@ async def find_man(message: types.Message):
 async def find_woman(message: types.Message):
     uid = message.from_user.id
 
-    if not is_premium_user(uid):
+    if not is_premium(uid):
         return await message.answer("🔒 Subscribe to Premium to use gender matching.")
 
     cur.execute("""
@@ -204,7 +197,7 @@ async def find_woman(message: types.Message):
 async def city_gender_choice(message: types.Message):
     uid = message.from_user.id
 
-    if not is_premium_user(uid):
+    if not is_premium(uid):
         return await message.answer(
             "🔒 City-based matching is a Premium feature.\n\n⭐ Subscribe to Premium to unlock it."
         )
@@ -223,7 +216,7 @@ async def city_gender_choice(message: types.Message):
 async def reconnect_last_chat(message: types.Message):
     uid = message.from_user.id
 
-    if not is_premium_user(uid):
+    if not is_premium(uid):
         return await message.answer(
             "🔒 Reconnect is a Premium feature.\n\n⭐ Subscribe to Premium to unlock it."
         )
@@ -494,13 +487,6 @@ async def save_profile_edit(message: types.Message):
         reply_markup=main_menu
     )
 
-@dp.message_handler(commands=["addpremium"])
-async def addpremium(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    uid = int(message.get_args())
-    add_premium(uid, timedelta(days=30))
-    await message.answer("✅ Premium added")
 
 @dp.message_handler(commands=["ban"])
 async def ban(message: types.Message):
@@ -523,37 +509,38 @@ async def onboarding_handler(message: types.Message):
         onboarding_state[uid] = "gender"
         return await message.answer("👤 Enter your gender:")
 
-    if step == "gender":
+    elif step == "gender":
         cur.execute("UPDATE users SET gender=%s WHERE user_id=%s", (text, uid))
         onboarding_state[uid] = "city"
         return await message.answer("🏙 Enter your city:")
 
-    if step == "city":
+    elif step == "city":
         cur.execute("UPDATE users SET city=%s WHERE user_id=%s", (text, uid))
         onboarding_state[uid] = "country"
         return await message.answer("🌍 Enter your country:")
 
-    if step == "country":
+    elif step == "country":
         cur.execute("UPDATE users SET country=%s WHERE user_id=%s", (text, uid))
         onboarding_state[uid] = "interests"
         return await message.answer(
-        "🏷 Enter your interests (comma separated)\n"
-        "Example: music, movies, sports"
-    )
-    if step == "interests":
-    interests = ",".join(
-        [i.strip().lower() for i in text.split(",") if i.strip()]
-    )
+            "🏷 Enter your interests (comma separated)\n"
+            "Example: music, movies, sports"
+        )
 
-    cur.execute(
-        "UPDATE users SET interests=%s WHERE user_id=%s",
-        (interests, uid)
-    )
-    onboarding_state.pop(uid)
-    await message.answer(
-        "✅ Profile setup complete!\n\nYou can now start chatting 🎉",
-        reply_markup=main_menu
-    )
+    elif step == "interests":
+        interests = ",".join(
+            [i.strip().lower() for i in text.split(",") if i.strip()]
+        )
+
+        cur.execute(
+            "UPDATE users SET interests=%s WHERE user_id=%s",
+            (interests, uid)
+        )
+        onboarding_state.pop(uid)
+        await message.answer(
+            "✅ Profile setup complete!\n\nYou can now start chatting 🎉",
+            reply_markup=main_menu
+        )
 
 from datetime import timedelta
 
@@ -604,4 +591,4 @@ if __name__ == "__main__":
         dp,
         skip_updates=True,
         on_startup=set_commands
-    )   
+    )  
