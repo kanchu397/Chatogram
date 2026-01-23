@@ -534,9 +534,9 @@ async def onboarding_handler(message: types.Message):
         return await message.answer("🌍 Enter your country:")
 
     if step == "country":
-    cur.execute("UPDATE users SET country=%s WHERE user_id=%s", (text, uid))
-    onboarding_state[uid] = "interests"
-    return await message.answer(
+        cur.execute("UPDATE users SET country=%s WHERE user_id=%s", (text, uid))
+        onboarding_state[uid] = "interests"
+        return await message.answer(
         "🏷 Enter your interests (comma separated)\n"
         "Example: music, movies, sports"
     )
