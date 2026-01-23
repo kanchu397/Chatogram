@@ -2,7 +2,6 @@ import logging
 import os
 import psycopg2
 from datetime import datetime, timedelta
-
 from aiogram import Bot, Dispatcher, executor, types
 from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
@@ -44,6 +43,23 @@ def add_premium(user_id, delta):
         SET premium_until = COALESCE(premium_until, NOW()) + %s
         WHERE user_id=%s
     """, (delta, user_id))
+    
+async def connect_users(user1, user2):
+    active_chats[user1] = user2
+    active_chats[user2] = user1
+
+    # Save last partner for reconnect
+    cur.execute("""
+        UPDATE users
+        SET last_partner = %s
+        WHERE user_id = %s
+    """, (user2, user1))
+
+    cur.execute("""
+        UPDATE users
+        SET last_partner = %s
+        WHERE user_id = %s
+    """, (user1, user2))
 
 # ================= HANDELRS =================
     
@@ -95,6 +111,7 @@ async def edit_profile_entry(message: types.Message):
     kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("✏ Edit Age", "✏ Edit Gender")
     kb.add("✏ Edit City", "✏ Edit Country")
+    kb.add("✏ Edit Interests")
     kb.add("⬅ Back")
 
     await message.answer(
@@ -131,6 +148,14 @@ def is_premium_user(user_id):
     row = cur.fetchone()
     return row and row[0] and row[0] > datetime.utcnow()
 
+@dp.message_handler(text="✏ Edit Interests")
+async def edit_interests(message: types.Message):
+    user_edit_state[message.from_user.id] = "interests"
+    await message.answer(
+        "🏷 Enter your interests (comma separated)\n"
+        "Example: music, movies, sports"
+    )
+
 @dp.message_handler(text="👨 Find a Man")
 async def find_man(message: types.Message):
     uid = message.from_user.id
@@ -142,9 +167,10 @@ async def find_man(message: types.Message):
         SELECT user_id FROM users
         WHERE gender ILIKE 'male'
         AND user_id != %s
+        AND NOT (%s = ANY(blocked_users))
         ORDER BY RANDOM()
         LIMIT 1
-    """, (uid,))
+    """, (uid,uid))
 
     partner = cur.fetchone()
     if not partner:
@@ -159,13 +185,14 @@ async def find_woman(message: types.Message):
     if not is_premium_user(uid):
         return await message.answer("🔒 Subscribe to Premium to use gender matching.")
 
-    cur.execute("""
-        SELECT user_id FROM users
-        WHERE gender ILIKE 'female'
-        AND user_id != %s
-        ORDER BY RANDOM()
-        LIMIT 1
-    """, (uid,))
+   cur.execute("""
+    SELECT user_id FROM users
+    WHERE gender ILIKE 'female'
+    AND user_id != %s
+    AND NOT (%s = ANY(blocked_users))
+    ORDER BY RANDOM()
+    LIMIT 1
+""", (uid, uid))
 
     partner = cur.fetchone()
     if not partner:
@@ -173,7 +200,67 @@ async def find_woman(message: types.Message):
 
     await connect_users(uid, partner[0])
 
+@dp.message_handler(text="🏙 Find in My City")
+async def city_gender_choice(message: types.Message):
+    uid = message.from_user.id
 
+    if not is_premium_user(uid):
+        return await message.answer(
+            "🔒 City-based matching is a Premium feature.\n\n⭐ Subscribe to Premium to unlock it."
+        )
+
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("🏙👨 Men in My City", "🏙👩 Women in My City")
+    kb.add("⬅ Back")
+
+    await message.answer(
+        "🏙 *Find in My City*\nChoose who you want to chat with:",
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
+
+@dp.message_handler(text="🔁 Reconnect")
+async def reconnect_last_chat(message: types.Message):
+    uid = message.from_user.id
+
+    if not is_premium_user(uid):
+        return await message.answer(
+            "🔒 Reconnect is a Premium feature.\n\n⭐ Subscribe to Premium to unlock it."
+        )
+
+    cur.execute(
+        "SELECT last_partner FROM users WHERE user_id=%s",
+        (uid,)
+    )
+    row = cur.fetchone()
+
+    if not row or not row[0]:
+        return await message.answer(
+            "❌ No previous chat found to reconnect."
+        )
+
+    partner_id = row[0]
+
+    # Prevent reconnect if partner is self
+    if partner_id == uid:
+        return await message.answer("❌ Invalid last chat.")
+
+    await connect_users(uid, partner_id)
+    
+@dp.message_handler(text="🚨 Report")
+async def report_user(message: types.Message):
+    uid = message.from_user.id
+
+    if uid not in active_chats:
+        return await message.answer("❌ You are not in a chat.")
+
+    report_state[uid] = active_chats[uid]
+
+    await message.answer(
+        "🚨 Please briefly describe the issue:\n"
+        "(spam / abuse / harassment / fake profile)"
+    )
+    
 # ================= MENUS =================
 
 main_menu = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -182,9 +269,14 @@ main_menu.add("👨 Find a Man", "👩 Find a Woman")
 main_menu.add("⭐ Premium", "👤 Profile")
 main_menu.add("🎁 Invite & Earn", "📜 Rules")
 main_menu.add("⚙ Settings")
+main_menu.add("🏙 Find in My City")
+main_menu.add("🔁 Reconnect")
 
 chat_menu = ReplyKeyboardMarkup(resize_keyboard=True)
 chat_menu.add("⏭ Next", "⛔ Stop")
+chat_kb = ReplyKeyboardMarkup(resize_keyboard=True)
+chat_kb.add("🚫 Block", "🚨 Report")
+chat_kb.add("⛔ Stop", "➡ Next")
 
 # ================= START =================
 
@@ -225,11 +317,14 @@ async def profile(message: types.Message):
     uid = message.from_user.id
 
     cur.execute("""
-        SELECT age, gender, city, country, premium_until
+        SELECT age, gender, city, country,interests,premium_until
         FROM users
         WHERE user_id=%s
     """, (uid,))
     user = cur.fetchone()
+    interests_text = (
+    interests.replace(",", ", ")
+    if interests else "Not set")
 
     if not user:
         return await message.answer("❌ Profile not found.")
@@ -240,12 +335,13 @@ async def profile(message: types.Message):
     badge = "⭐ PREMIUM USER\n\n" if is_premium else ""
 
     text = (
-        f"{badge}"
-        f"👤 *Your Profile*\n"
-        f"Age: {age}\n"
-        f"Gender: {gender}\n"
-        f"City: {city}\n"
-        f"Country: {country}"
+    f"{badge}"
+    f"👤 *Your Profile*\n"
+    f"Age: {age}\n"
+    f"Gender: {gender}\n"
+    f"City: {city}\n"
+    f"Country: {country}\n"
+    f"🏷 Interests: {interests_text}"
     )
 
     await message.answer(text, parse_mode="Markdown")
@@ -310,11 +406,26 @@ async def pre_checkout(q: PreCheckoutQuery):
     await bot.answer_pre_checkout_query(q.id, ok=True)
 
 @dp.message_handler(content_types=ContentType.SUCCESSFUL_PAYMENT)
-async def success_payment(message: types.Message):
+async def successful_payment(message: types.Message):
     payload = message.successful_payment.invoice_payload
-    days = int(payload.split("_")[1])
-    add_premium(message.from_user.id, timedelta(days=days))
-    await message.answer("⭐ Premium Activated!", reply_markup=main_menu)
+
+    if payload == "premium_7_days":
+        cur.execute("""
+            UPDATE users
+            SET premium_until = NOW() + INTERVAL '7 days'
+            WHERE user_id = %s
+        """, (message.from_user.id,))
+
+        await message.answer("⭐ Premium activated for 7 days!")
+
+    elif payload == "premium_30_days":
+        cur.execute("""
+            UPDATE users
+            SET premium_until = NOW() + INTERVAL '30 days'
+            WHERE user_id = %s
+        """, (message.from_user.id,))
+
+        await message.answer("⭐ Premium activated for 30 days!")
 
 # ================= INVITE =================
 
@@ -335,6 +446,35 @@ async def rules(message: types.Message):
         "2️⃣ No spam\n"
         "3️⃣ No illegal content\n"
         "4️⃣ Respect privacy"
+    )
+
+#===============REPORTING==================
+
+@dp.message_handler(lambda m: m.from_user.id in report_state)
+async def save_report(message: types.Message):
+    reporter = message.from_user.id
+    reported = report_state.pop(reporter)
+    reason = message.text.strip()
+
+    cur.execute("""
+        INSERT INTO reports (reporter_id, reported_id, reason)
+        VALUES (%s, %s, %s)
+    """, (reporter, reported, reason))
+
+    # End chat
+    if reporter in active_chats:
+        partner = active_chats.pop(reporter)
+        active_chats.pop(partner, None)
+
+        await bot.send_message(
+            partner,
+            "❌ Chat ended.",
+            reply_markup=main_menu
+        )
+
+    await message.answer(
+        "🚨 Report submitted. Thank you for helping keep Chatogram safe.",
+        reply_markup=main_menu
     )
 
 # ================= ADMIN =================
@@ -394,13 +534,28 @@ async def onboarding_handler(message: types.Message):
         return await message.answer("🌍 Enter your country:")
 
     if step == "country":
-        cur.execute("UPDATE users SET country=%s WHERE user_id=%s", (text, uid))
-        onboarding_state.pop(uid)
+    cur.execute("UPDATE users SET country=%s WHERE user_id=%s", (text, uid))
+    onboarding_state[uid] = "interests"
+    return await message.answer(
+        "🏷 Enter your interests (comma separated)\n"
+        "Example: music, movies, sports"
+    )
 
-        await message.answer(
-            "✅ Profile setup complete!\n\nYou can now start chatting 🎉",
-            reply_markup=main_menu
-        )
+if step == "interests":
+    interests = ",".join(
+        [i.strip().lower() for i in text.split(",") if i.strip()]
+    )
+
+    cur.execute(
+        "UPDATE users SET interests=%s WHERE user_id=%s",
+        (interests, uid)
+    )
+    onboarding_state.pop(uid)
+
+    await message.answer(
+        "✅ Profile setup complete!\n\nYou can now start chatting 🎉",
+        reply_markup=main_menu
+    )
         
 from datetime import timedelta
 
