@@ -185,7 +185,7 @@ async def find_woman(message: types.Message):
     if not is_premium_user(uid):
         return await message.answer("🔒 Subscribe to Premium to use gender matching.")
 
-   cur.execute("""
+    cur.execute("""
        SELECT user_id FROM users
        WHERE gender ILIKE 'female'
        AND user_id != %s
