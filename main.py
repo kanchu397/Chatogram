@@ -186,12 +186,12 @@ async def find_woman(message: types.Message):
         return await message.answer("🔒 Subscribe to Premium to use gender matching.")
 
    cur.execute("""
-        SELECT user_id FROM users
-        WHERE gender ILIKE 'female'
-        AND user_id != %s
-        AND NOT (%s = ANY(blocked_users))
-        ORDER BY RANDOM()
-        LIMIT 1
+       SELECT user_id FROM users
+       WHERE gender ILIKE 'female'
+       AND user_id != %s
+       AND NOT (%s = ANY(blocked_users))
+       ORDER BY RANDOM()
+       LIMIT 1
     """, (uid, uid))
 
     partner = cur.fetchone()
