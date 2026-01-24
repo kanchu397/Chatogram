@@ -8,16 +8,30 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     LabeledPrice, PreCheckoutQuery, ContentType
 )
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ================= CONFIG =================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
+ADMIN_ID = os.getenv("ADMIN_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN environment variable is required")
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL environment variable is required")
+if not ADMIN_ID:
+    raise ValueError("ADMIN_ID environment variable is required")
+
+ADMIN_ID = int(ADMIN_ID)
 user_edit_state = {}
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
 onboarding_state = {}
+active_chats = {}
+report_state = {}
 
 logging.basicConfig(level=logging.INFO)
 
@@ -160,10 +174,9 @@ async def find_man(message: types.Message):
         SELECT user_id FROM users
         WHERE gender ILIKE 'male'
         AND user_id != %s
-        AND NOT (%s = ANY(blocked_users))
         ORDER BY RANDOM()
         LIMIT 1
-    """, (uid,uid))
+    """, (uid,))
 
     partner = cur.fetchone()
     if not partner:
@@ -182,10 +195,9 @@ async def find_woman(message: types.Message):
        SELECT user_id FROM users
        WHERE gender ILIKE 'female'
        AND user_id != %s
-       AND NOT (%s = ANY(blocked_users))
        ORDER BY RANDOM()
        LIMIT 1
-    """, (uid, uid))
+    """, (uid,))
 
     partner = cur.fetchone()
     if not partner:
@@ -341,18 +353,6 @@ async def profile(message: types.Message):
 async def find_chat(message: types.Message):
     await message.answer("🔄 Searching for a match...", reply_markup=chat_menu)
 
-@dp.message_handler(text="👨 Find a Man")
-async def find_man(message: types.Message):
-    if not is_premium(message.from_user.id):
-        return await message.answer("⭐ Subscribe to Premium")
-    await message.answer("🔄 Finding a man...", reply_markup=chat_menu)
-
-@dp.message_handler(text="👩 Find a Woman")
-async def find_woman(message: types.Message):
-    if not is_premium(message.from_user.id):
-        return await message.answer("⭐ Subscribe to Premium")
-    await message.answer("🔄 Finding a woman...", reply_markup=chat_menu)
-
 # ================= CHAT CONTROLS =================
 
 @dp.message_handler(text="⛔ Stop")
@@ -397,7 +397,7 @@ async def pre_checkout(q: PreCheckoutQuery):
 async def successful_payment(message: types.Message):
     payload = message.successful_payment.invoice_payload
 
-    if payload == "premium_7_days":
+    if payload == "premium_7":
         cur.execute("""
             UPDATE users
             SET premium_until = NOW() + INTERVAL '7 days'
@@ -406,7 +406,7 @@ async def successful_payment(message: types.Message):
 
         await message.answer("⭐ Premium activated for 7 days!")
 
-    elif payload == "premium_30_days":
+    elif payload == "premium_30":
         cur.execute("""
             UPDATE users
             SET premium_until = NOW() + INTERVAL '30 days'
