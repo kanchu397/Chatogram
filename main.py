@@ -418,13 +418,16 @@ async def find_by_interests(message: types.Message):
     logging.info(f"[FIND_INTERESTS] Query result: {partner}")
     
     if not partner:
+        # No match found - ensure user gets a clear response
         waiting_queue.add(uid)
         logging.info(f"[FIND_INTERESTS] No match found, added to queue")
+        # Note: is_online remains true as user is in waiting queue
         return await message.answer(
-            "😕 No users with similar interests found right now.",
+            "😕 No users found right now. Please try again later.",
             reply_markup=main_menu
         )
 
+    # Partner found - proceed with connection
     logging.info(f"[FIND_INTERESTS] Found partner {partner[0]}, connecting...")
     await connect_users(uid, partner[0])
 
