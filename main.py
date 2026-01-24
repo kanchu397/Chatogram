@@ -46,6 +46,44 @@ conn = psycopg2.connect(DATABASE_URL)
 conn.autocommit = True
 cur = conn.cursor()
 
+def ensure_schema():
+    """
+    Ensure required database columns exist (safe migration).
+    
+    This function creates the is_online column if it doesn't exist.
+    The is_online column is used throughout the matching logic to:
+    - Track which users are currently online and available for matching
+    - Filter out offline users from matching queries
+    - Set users as online when they press Find buttons
+    - Set users as offline when they stop chats
+    
+    Used in: find_chat, find_man, find_woman, find_by_interests, 
+    find_men_in_city, find_women_in_city, next_chat, stop_chat, connect_users
+    """
+    try:
+        # Check if is_online column exists
+        cur.execute("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name='users' AND column_name='is_online'
+        """)
+        if not cur.fetchone():
+            # Column doesn't exist, create it
+            cur.execute("""
+                ALTER TABLE users 
+                ADD COLUMN is_online BOOLEAN DEFAULT FALSE
+            """)
+            logging.info("Created is_online column in users table")
+        else:
+            logging.info("is_online column already exists")
+    except Exception as e:
+        logging.error(f"Error ensuring schema: {e}")
+        # Continue anyway - column might exist or migration might fail
+        # The bot will still work if the column exists
+
+# Run schema migration on startup
+ensure_schema()
+
 # ================= HELPERS =================
 
 def is_premium(user_id):
