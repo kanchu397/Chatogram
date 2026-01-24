@@ -52,6 +52,17 @@ CREATE TABLE IF NOT EXISTS matches (
 );
 """)
 
+# Reports table
+cur.execute("""
+CREATE TABLE IF NOT EXISTS reports (
+    id SERIAL PRIMARY KEY,
+    reporter_id BIGINT,
+    reported_id BIGINT,
+    reason TEXT,
+    reported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+""")
+
 print("Tables ensured")
 
 # =========================
