@@ -121,6 +121,7 @@ def add_premium(user_id, delta):
     """, (delta, user_id))
     
 async def connect_users(user1, user2):
+    logging.info(f"[CONNECT] Connecting users {user1} and {user2}")
     active_chats[user1] = user2
     active_chats[user2] = user1
     
@@ -145,7 +146,9 @@ async def connect_users(user1, user2):
     try:
         await bot.send_message(user1, "✅ Match found! Start chatting...", reply_markup=chat_kb)
         await bot.send_message(user2, "✅ Match found! Start chatting...", reply_markup=chat_kb)
-    except Exception:
+        logging.info(f"[CONNECT] Successfully notified both users")
+    except Exception as e:
+        logging.error(f"[CONNECT] Error notifying users: {e}")
         pass  # User may have blocked the bot
 
 # ================= HANDELRS =================
@@ -239,71 +242,101 @@ async def edit_interests(message: types.Message):
 @dp.message_handler(text="👨 Find a Man")
 async def find_man(message: types.Message):
     uid = message.from_user.id
+    logging.info(f"[FIND_MAN] User {uid} searching for male match")
 
     if not is_premium(uid):
         return await message.answer("🔒 Subscribe to Premium to use gender matching.")
 
-    blocked = get_blocked_users(uid)
+    # Mark user as online first
     cur.execute("UPDATE users SET is_online=true WHERE user_id=%s", (uid,))
+    
+    blocked = get_blocked_users(uid)
+    logging.info(f"[FIND_MAN] User {uid} blocked list: {blocked}")
 
     cur.execute("""
-        SELECT user_id FROM users
-        WHERE gender ILIKE 'male'
-        AND user_id != %s
-        AND (banned IS NULL OR banned = false)
-        AND (is_online IS NULL OR is_online = true)
-        AND (blocked_users IS NULL OR NOT (%s = ANY(blocked_users)))
-        AND (array_length(blocked_users, 1) IS NULL OR NOT (%s = ANY(blocked_users)))
+        SELECT u.user_id FROM users u
+        WHERE u.gender ILIKE 'male'
+        AND u.user_id != %s
+        AND (u.banned IS NULL OR u.banned = false)
+        AND (u.is_online IS NULL OR u.is_online = true)
+        AND (u.blocked_users IS NULL OR NOT (%s = ANY(u.blocked_users)))
+        AND NOT EXISTS (
+            SELECT 1 FROM users u2 
+            WHERE u2.user_id = %s 
+            AND u2.blocked_users IS NOT NULL 
+            AND u.user_id = ANY(u2.blocked_users)
+        )
         ORDER BY RANDOM()
         LIMIT 1
     """, (uid, uid, uid))
 
     partner = cur.fetchone()
+    logging.info(f"[FIND_MAN] Query result: {partner}")
+    
     if not partner:
         waiting_queue.add(uid)
+        logging.info(f"[FIND_MAN] No match found, added to queue")
         return await message.answer(
-            "No users found right now. Please try again later.",
+            "😕 No users found right now. Please try again later.",
             reply_markup=main_menu
         )
 
+    logging.info(f"[FIND_MAN] Found partner {partner[0]}, connecting...")
     await connect_users(uid, partner[0])
 
 @dp.message_handler(text="👩 Find a Woman")
 async def find_woman(message: types.Message):
     uid = message.from_user.id
+    logging.info(f"[FIND_WOMAN] User {uid} searching for female match")
 
     if not is_premium(uid):
         return await message.answer("🔒 Subscribe to Premium to use gender matching.")
 
-    blocked = get_blocked_users(uid)
+    # Mark user as online first
     cur.execute("UPDATE users SET is_online=true WHERE user_id=%s", (uid,))
+    
+    blocked = get_blocked_users(uid)
+    logging.info(f"[FIND_WOMAN] User {uid} blocked list: {blocked}")
 
     cur.execute("""
-       SELECT user_id FROM users
-       WHERE gender ILIKE 'female'
-       AND user_id != %s
-       AND (banned IS NULL OR banned = false)
-       AND (is_online IS NULL OR is_online = true)
-       AND (blocked_users IS NULL OR NOT (%s = ANY(blocked_users)))
-       AND (array_length(blocked_users, 1) IS NULL OR NOT (%s = ANY(blocked_users)))
+       SELECT u.user_id FROM users u
+       WHERE u.gender ILIKE 'female'
+       AND u.user_id != %s
+       AND (u.banned IS NULL OR u.banned = false)
+       AND (u.is_online IS NULL OR u.is_online = true)
+       AND (u.blocked_users IS NULL OR NOT (%s = ANY(u.blocked_users)))
+       AND NOT EXISTS (
+           SELECT 1 FROM users u2 
+           WHERE u2.user_id = %s 
+           AND u2.blocked_users IS NOT NULL 
+           AND u.user_id = ANY(u2.blocked_users)
+       )
        ORDER BY RANDOM()
        LIMIT 1
     """, (uid, uid, uid))
 
     partner = cur.fetchone()
+    logging.info(f"[FIND_WOMAN] Query result: {partner}")
+    
     if not partner:
         waiting_queue.add(uid)
+        logging.info(f"[FIND_WOMAN] No match found, added to queue")
         return await message.answer(
-            "No users found right now. Please try again later.",
+            "😕 No users found right now. Please try again later.",
             reply_markup=main_menu
         )
 
+    logging.info(f"[FIND_WOMAN] Found partner {partner[0]}, connecting...")
     await connect_users(uid, partner[0])
 
 @dp.message_handler(text="🎯 Find by Interests")
 async def find_by_interests(message: types.Message):
     uid = message.from_user.id
+    logging.info(f"[FIND_INTERESTS] User {uid} searching by interests")
 
+    # Mark user as online first
+    cur.execute("UPDATE users SET is_online=true WHERE user_id=%s", (uid,))
+    
     # Get user's interests
     cur.execute("SELECT interests FROM users WHERE user_id=%s", (uid,))
     user_row = cur.fetchone()
@@ -322,30 +355,39 @@ async def find_by_interests(message: types.Message):
         )
 
     blocked = get_blocked_users(uid)
-    cur.execute("UPDATE users SET is_online=true WHERE user_id=%s", (uid,))
+    logging.info(f"[FIND_INTERESTS] User {uid} blocked list: {blocked}, interests: {user_interests}")
 
     # Use PostgreSQL array overlap operator (&&)
     cur.execute("""
-        SELECT user_id FROM users
-        WHERE user_id != %s
-        AND (banned IS NULL OR banned = false)
-        AND (is_online IS NULL OR is_online = true)
-        AND interests IS NOT NULL
-        AND interests && %s
-        AND (blocked_users IS NULL OR NOT (%s = ANY(blocked_users)))
-        AND (array_length(blocked_users, 1) IS NULL OR NOT (%s = ANY(blocked_users)))
+        SELECT u.user_id FROM users u
+        WHERE u.user_id != %s
+        AND (u.banned IS NULL OR u.banned = false)
+        AND (u.is_online IS NULL OR u.is_online = true)
+        AND u.interests IS NOT NULL
+        AND u.interests && %s
+        AND (u.blocked_users IS NULL OR NOT (%s = ANY(u.blocked_users)))
+        AND NOT EXISTS (
+            SELECT 1 FROM users u2 
+            WHERE u2.user_id = %s 
+            AND u2.blocked_users IS NOT NULL 
+            AND u.user_id = ANY(u2.blocked_users)
+        )
         ORDER BY RANDOM()
         LIMIT 1
     """, (uid, user_interests, uid, uid))
 
     partner = cur.fetchone()
+    logging.info(f"[FIND_INTERESTS] Query result: {partner}")
+    
     if not partner:
         waiting_queue.add(uid)
+        logging.info(f"[FIND_INTERESTS] No match found, added to queue")
         return await message.answer(
             "😕 No users with similar interests found right now.",
             reply_markup=main_menu
         )
 
+    logging.info(f"[FIND_INTERESTS] Found partner {partner[0]}, connecting...")
     await connect_users(uid, partner[0])
 
 @dp.message_handler(text="🏙 Find in My City")
@@ -370,10 +412,14 @@ async def city_gender_choice(message: types.Message):
 @dp.message_handler(text="🏙👨 Men in My City")
 async def find_men_in_city(message: types.Message):
     uid = message.from_user.id
+    logging.info(f"[FIND_MEN_CITY] User {uid} searching for men in city")
 
     if not is_premium(uid):
         return await message.answer("🔒 Subscribe to Premium to use city matching.")
 
+    # Mark user as online first
+    cur.execute("UPDATE users SET is_online=true WHERE user_id=%s", (uid,))
+    
     # Get user's city
     cur.execute("SELECT city FROM users WHERE user_id=%s", (uid,))
     user_row = cur.fetchone()
@@ -385,38 +431,51 @@ async def find_men_in_city(message: types.Message):
 
     user_city = user_row[0]
     blocked = get_blocked_users(uid)
-    cur.execute("UPDATE users SET is_online=true WHERE user_id=%s", (uid,))
+    logging.info(f"[FIND_MEN_CITY] User {uid} city: {user_city}, blocked list: {blocked}")
 
     cur.execute("""
-        SELECT user_id FROM users
-        WHERE gender ILIKE 'male'
-        AND city ILIKE %s
-        AND user_id != %s
-        AND (banned IS NULL OR banned = false)
-        AND (is_online IS NULL OR is_online = true)
-        AND (blocked_users IS NULL OR NOT (%s = ANY(blocked_users)))
-        AND (array_length(blocked_users, 1) IS NULL OR NOT (%s = ANY(blocked_users)))
+        SELECT u.user_id FROM users u
+        WHERE u.gender ILIKE 'male'
+        AND u.city ILIKE %s
+        AND u.user_id != %s
+        AND (u.banned IS NULL OR u.banned = false)
+        AND (u.is_online IS NULL OR u.is_online = true)
+        AND (u.blocked_users IS NULL OR NOT (%s = ANY(u.blocked_users)))
+        AND NOT EXISTS (
+            SELECT 1 FROM users u2 
+            WHERE u2.user_id = %s 
+            AND u2.blocked_users IS NOT NULL 
+            AND u.user_id = ANY(u2.blocked_users)
+        )
         ORDER BY RANDOM()
         LIMIT 1
     """, (user_city, uid, uid, uid))
 
     partner = cur.fetchone()
+    logging.info(f"[FIND_MEN_CITY] Query result: {partner}")
+    
     if not partner:
         waiting_queue.add(uid)
+        logging.info(f"[FIND_MEN_CITY] No match found, added to queue")
         return await message.answer(
-            "No users found right now. Please try again later.",
+            "😕 No users found right now. Please try again later.",
             reply_markup=main_menu
         )
 
+    logging.info(f"[FIND_MEN_CITY] Found partner {partner[0]}, connecting...")
     await connect_users(uid, partner[0])
 
 @dp.message_handler(text="🏙👩 Women in My City")
 async def find_women_in_city(message: types.Message):
     uid = message.from_user.id
+    logging.info(f"[FIND_WOMEN_CITY] User {uid} searching for women in city")
 
     if not is_premium(uid):
         return await message.answer("🔒 Subscribe to Premium to use city matching.")
 
+    # Mark user as online first
+    cur.execute("UPDATE users SET is_online=true WHERE user_id=%s", (uid,))
+    
     # Get user's city
     cur.execute("SELECT city FROM users WHERE user_id=%s", (uid,))
     user_row = cur.fetchone()
@@ -428,29 +487,38 @@ async def find_women_in_city(message: types.Message):
 
     user_city = user_row[0]
     blocked = get_blocked_users(uid)
-    cur.execute("UPDATE users SET is_online=true WHERE user_id=%s", (uid,))
+    logging.info(f"[FIND_WOMEN_CITY] User {uid} city: {user_city}, blocked list: {blocked}")
 
     cur.execute("""
-        SELECT user_id FROM users
-        WHERE gender ILIKE 'female'
-        AND city ILIKE %s
-        AND user_id != %s
-        AND (banned IS NULL OR banned = false)
-        AND (is_online IS NULL OR is_online = true)
-        AND (blocked_users IS NULL OR NOT (%s = ANY(blocked_users)))
-        AND (array_length(blocked_users, 1) IS NULL OR NOT (%s = ANY(blocked_users)))
+        SELECT u.user_id FROM users u
+        WHERE u.gender ILIKE 'female'
+        AND u.city ILIKE %s
+        AND u.user_id != %s
+        AND (u.banned IS NULL OR u.banned = false)
+        AND (u.is_online IS NULL OR u.is_online = true)
+        AND (u.blocked_users IS NULL OR NOT (%s = ANY(u.blocked_users)))
+        AND NOT EXISTS (
+            SELECT 1 FROM users u2 
+            WHERE u2.user_id = %s 
+            AND u2.blocked_users IS NOT NULL 
+            AND u.user_id = ANY(u2.blocked_users)
+        )
         ORDER BY RANDOM()
         LIMIT 1
     """, (user_city, uid, uid, uid))
 
     partner = cur.fetchone()
+    logging.info(f"[FIND_WOMEN_CITY] Query result: {partner}")
+    
     if not partner:
         waiting_queue.add(uid)
+        logging.info(f"[FIND_WOMEN_CITY] No match found, added to queue")
         return await message.answer(
-            "No users found right now. Please try again later.",
+            "😕 No users found right now. Please try again later.",
             reply_markup=main_menu
         )
 
+    logging.info(f"[FIND_WOMEN_CITY] Found partner {partner[0]}, connecting...")
     await connect_users(uid, partner[0])
 
 @dp.message_handler(text="🔁 Reconnect")
@@ -655,36 +723,51 @@ async def profile(message: types.Message):
 @dp.message_handler(text="🔍 Find Chat")
 async def find_chat(message: types.Message):
     uid = message.from_user.id
+    logging.info(f"[FIND_CHAT] User {uid} searching for match")
+    
+    # Mark user as online first
+    cur.execute("UPDATE users SET is_online=true WHERE user_id=%s", (uid,))
     
     # Try to match with waiting queue first
     waiting_partner = await try_match_waiting_queue(uid)
     if waiting_partner:
+        logging.info(f"[FIND_CHAT] Matched with waiting user {waiting_partner}")
         await connect_users(uid, waiting_partner)
         return
     
     blocked = get_blocked_users(uid)
-    cur.execute("UPDATE users SET is_online=true WHERE user_id=%s", (uid,))
+    logging.info(f"[FIND_CHAT] User {uid} blocked list: {blocked}")
 
+    # Simplified query - check if partner blocked user, and user didn't block partner
     cur.execute("""
-        SELECT user_id FROM users
-        WHERE user_id != %s
-        AND (banned IS NULL OR banned = false)
-        AND (is_online IS NULL OR is_online = true)
-        AND (blocked_users IS NULL OR NOT (%s = ANY(blocked_users)))
-        AND (array_length(blocked_users, 1) IS NULL OR NOT (%s = ANY(blocked_users)))
+        SELECT u.user_id FROM users u
+        WHERE u.user_id != %s
+        AND (u.banned IS NULL OR u.banned = false)
+        AND (u.is_online IS NULL OR u.is_online = true)
+        AND (u.blocked_users IS NULL OR NOT (%s = ANY(u.blocked_users)))
+        AND NOT EXISTS (
+            SELECT 1 FROM users u2 
+            WHERE u2.user_id = %s 
+            AND u2.blocked_users IS NOT NULL 
+            AND u.user_id = ANY(u2.blocked_users)
+        )
         ORDER BY RANDOM()
         LIMIT 1
     """, (uid, uid, uid))
 
     partner = cur.fetchone()
+    logging.info(f"[FIND_CHAT] Query result: {partner}")
+    
     if not partner:
         # Add to waiting queue
         waiting_queue.add(uid)
+        logging.info(f"[FIND_CHAT] No match found, added to queue")
         return await message.answer(
-            "No users found right now. Please try again later.",
+            "😕 No users found right now. Please try again later.",
             reply_markup=main_menu
         )
 
+    logging.info(f"[FIND_CHAT] Found partner {partner[0]}, connecting...")
     await connect_users(uid, partner[0])
 
 # ================= CHAT CONTROLS =================
@@ -712,6 +795,7 @@ async def stop_chat(message: types.Message):
 @dp.message_handler(text="⏭ Next")
 async def next_chat(message: types.Message):
     uid = message.from_user.id
+    logging.info(f"[NEXT] User {uid} searching for next match")
 
     # End current chat if exists
     if uid in active_chats:
@@ -719,34 +803,47 @@ async def next_chat(message: types.Message):
         active_chats.pop(partner, None)
         cur.execute("UPDATE users SET is_online=false WHERE user_id IN (%s, %s)", (uid, partner))
 
+    # Mark user as online
+    cur.execute("UPDATE users SET is_online=true WHERE user_id=%s", (uid,))
+    
     # Try to match with waiting queue first
     waiting_partner = await try_match_waiting_queue(uid)
     if waiting_partner:
+        logging.info(f"[NEXT] Matched with waiting user {waiting_partner}")
         await connect_users(uid, waiting_partner)
         return
 
     blocked = get_blocked_users(uid)
-    cur.execute("UPDATE users SET is_online=true WHERE user_id=%s", (uid,))
+    logging.info(f"[NEXT] User {uid} blocked list: {blocked}")
 
     cur.execute("""
-        SELECT user_id FROM users
-        WHERE user_id != %s
-        AND (banned IS NULL OR banned = false)
-        AND (is_online IS NULL OR is_online = true)
-        AND (blocked_users IS NULL OR NOT (%s = ANY(blocked_users)))
-        AND (array_length(blocked_users, 1) IS NULL OR NOT (%s = ANY(blocked_users)))
+        SELECT u.user_id FROM users u
+        WHERE u.user_id != %s
+        AND (u.banned IS NULL OR u.banned = false)
+        AND (u.is_online IS NULL OR u.is_online = true)
+        AND (u.blocked_users IS NULL OR NOT (%s = ANY(u.blocked_users)))
+        AND NOT EXISTS (
+            SELECT 1 FROM users u2 
+            WHERE u2.user_id = %s 
+            AND u2.blocked_users IS NOT NULL 
+            AND u.user_id = ANY(u2.blocked_users)
+        )
         ORDER BY RANDOM()
         LIMIT 1
     """, (uid, uid, uid))
 
     partner = cur.fetchone()
+    logging.info(f"[NEXT] Query result: {partner}")
+    
     if not partner:
         waiting_queue.add(uid)
+        logging.info(f"[NEXT] No match found, added to queue")
         return await message.answer(
-            "No users found right now. Please try again later.",
+            "😕 No users found right now. Please try again later.",
             reply_markup=main_menu
         )
 
+    logging.info(f"[NEXT] Found partner {partner[0]}, connecting...")
     await connect_users(uid, partner[0])
 
 # ================= PREMIUM =================
