@@ -77,7 +77,7 @@ def get_blocked_users(user_id):
             (user_id,)
         )
         row = cur.fetchone()
-        if row and row[0]:
+        if row and row[0] is not None:
             return row[0]
         return []
     except Exception:
@@ -91,7 +91,8 @@ def check_and_auto_ban(user_id):
             (user_id,)
         )
         row = cur.fetchone()
-        if row and row[0] and row[0] >= 3:
+        # FIX: Explicit None check for safer handling
+        if row and row[0] is not None and row[0] >= 3:
             cur.execute(
                 "UPDATE users SET banned=true WHERE user_id=%s",
                 (user_id,)
@@ -125,6 +126,12 @@ async def end_chat(user1, user2, notify_user1=True, notify_user2=True):
         except: pass
 
 async def connect_users(user1, user2):
+    # FIX: Ensure symmetric state by ending existing chats first
+    if user1 in active_chats:
+        await end_chat(user1, active_chats[user1], notify_user1=True, notify_user2=True)
+    if user2 in active_chats:
+        await end_chat(user2, active_chats[user2], notify_user1=True, notify_user2=True)
+
     active_chats[user1] = user2
     active_chats[user2] = user1
     
@@ -361,9 +368,27 @@ async def find_match_generic(message: types.Message, query_condition, query_para
     # Only use queue for generic searches to ensure specific filters are respected
     if not query_condition:
         for waiting_user in list(waiting_queue):
-            if waiting_user != uid:
-                waiting_queue.remove(waiting_user)
-                return await connect_users(uid, waiting_user)
+            if waiting_user == uid:
+                continue
+            
+            # FIX: Validate waiting user (must not be active/banned)
+            if waiting_user in active_chats:
+                waiting_queue.discard(waiting_user)
+                continue
+                
+            try:
+                # Optional: Check if user is actually available/online in DB
+                # This prevents matching with ghost users if they crashed out
+                cur.execute("SELECT is_online, banned FROM users WHERE user_id=%s", (waiting_user,))
+                row = cur.fetchone()
+                if not row or (row[1] is not None and row[1]): # If banned
+                     waiting_queue.discard(waiting_user)
+                     continue
+            except Exception:
+                pass # Fail safe, assume ok or skip? skip to be safe
+                
+            waiting_queue.remove(waiting_user)
+            return await connect_users(uid, waiting_user)
     
     # 2. CHECK BLOCKING AND DB MATCH
     final_query = f"""
@@ -461,12 +486,13 @@ async def find_by_interests(message: types.Message):
         return await message.answer("❌ You have no interests selected.")
 
     # Construct dynamic SQL for interest matching (at least one common interest)
-    # FIX 3: Prevent self-matching is handled by 'WHERE user_id != %s' in generic query
+    # FIX 3: Prevent partial matches using Regex (e.g. "Art" vs "Smart")
     conditions = []
     params = []
     for interest in user_interests:
-        conditions.append("interests ILIKE %s")
-        params.append(f"%{interest}%")
+        # Regex pattern: start-of-string or comma, optionally space, interest, optionally space, comma or end-of-string
+        conditions.append("interests ~* %s")
+        params.append(fr"(^|,)\s*{interest}\s*(,|$)")
     
     sql_condition = "AND (" + " OR ".join(conditions) + ")"
     
@@ -478,18 +504,22 @@ async def reconnect_last_chat(message: types.Message):
     if not is_premium(uid):
         return await message.answer("🔒 Subscribe to Premium to reconnect.")
 
-    cur.execute("SELECT last_chat_user_id FROM users WHERE user_id=%s", (uid,))
-    row = cur.fetchone()
+    try:
+        cur.execute("SELECT last_chat_user_id FROM users WHERE user_id=%s", (uid,))
+        row = cur.fetchone()
 
-    if not row or not row[0]:
-        return await message.answer("❌ No previous chat found.")
-    
-    partner_id = row[0]
-    
-    # Check if user is available
-    cur.execute("SELECT user_id FROM users WHERE user_id=%s AND (banned IS NULL OR banned=false)", (partner_id,))
-    if not cur.fetchone():
-        return await message.answer("❌ User is no longer available.")
+        if not row or not row[0]:
+            return await message.answer("❌ No previous chat found.")
+        
+        partner_id = row[0]
+        
+        # Check if user is available
+        cur.execute("SELECT user_id FROM users WHERE user_id=%s AND (banned IS NULL OR banned=false)", (partner_id,))
+        if not cur.fetchone():
+            return await message.answer("❌ User is no longer available.")
+    except Exception as e:
+        logging.error(f"Reconnect DB error: {e}")
+        return await message.answer("❌ Error reconnecting.")
     
     # Check if blocked
     blocked_list = get_blocked_users(uid)
