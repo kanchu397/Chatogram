@@ -238,10 +238,10 @@ async def start_cmd(message: types.Message):
         )
         return
 
-    # New user → insert
+    # New user → insert and grant 2 hours free premium
     cur.execute("""
-        INSERT INTO users (user_id, username)
-        VALUES (%s, %s)
+        INSERT INTO users (user_id, username, premium_until)
+        VALUES (%s, %s, NOW() + INTERVAL '2 hours')
         ON CONFLICT (user_id) DO NOTHING
     """, (uid, username))
 
@@ -602,8 +602,20 @@ async def reconnect_last_chat(message: types.Message):
 # ================= CHAT CONTROLS =================
 
 @dp.message_handler(text="⛔ Stop")
+@dp.message_handler(commands=["stop"])
 async def stop_chat(message: types.Message):
     uid = message.from_user.id
+    
+    # Remove from waiting queue if present
+    if uid in waiting_queue:
+        waiting_queue.discard(uid)
+        try:
+            cur.execute("UPDATE users SET is_online=false WHERE user_id=%s", (uid,))
+        except Exception:
+            pass
+        return await message.answer("❌ Stopped searching.", reply_markup=main_menu)
+    
+    # End active chat if in one
     if uid in active_chats:
         partner = active_chats[uid]
         await end_chat(uid, partner)
@@ -611,6 +623,7 @@ async def stop_chat(message: types.Message):
         await message.answer("❌ You are not in a chat.", reply_markup=main_menu)
 
 @dp.message_handler(text="⏭ Next")
+@dp.message_handler(commands=["next"])
 async def next_chat(message: types.Message):
     uid = message.from_user.id
     if uid in active_chats:
