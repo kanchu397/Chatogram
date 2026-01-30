@@ -37,6 +37,7 @@ onboarding_state = {}   # For registration flow
 active_chats = {}       # {user_id: partner_id} (Bidirectional)
 waiting_queue = set()   # Users waiting for random match
 report_state = {}       # {reporter_id: reported_id}
+share_profile_state = {}  # {user_id: "awaiting_confirmation"} - for /shareprofile flow
 
 # Predefined Interests for Selection
 AVAILABLE_INTERESTS = [
@@ -162,6 +163,48 @@ async def connect_users(user1, user2):
     except Exception:
         # If a user blocked the bot, force disconnect
         await end_chat(user1, user2)
+    
+    # Premium feature: Show partner details to premium user
+    try:
+        # Check if user1 is premium
+        if is_premium(user1):
+            cur.execute("""
+                SELECT age, gender, city, interests
+                FROM users WHERE user_id = %s
+            """, (user2,))
+            partner_row = cur.fetchone()
+            if partner_row:
+                p_age, p_gender, p_city, p_interests = partner_row
+                p_interests_text = p_interests if p_interests else "Not set"
+                details_msg = (
+                    f"ℹ️ *Partner Details* (Premium)\n\n"
+                    f"🎂 Age: {p_age}\n"
+                    f"⚧ Gender: {p_gender}\n"
+                    f"🏙 City: {p_city}\n"
+                    f"🎯 Interests: {p_interests_text}"
+                )
+                await bot.send_message(user1, details_msg, parse_mode="Markdown")
+        
+        # Check if user2 is premium
+        if is_premium(user2):
+            cur.execute("""
+                SELECT age, gender, city, interests
+                FROM users WHERE user_id = %s
+            """, (user1,))
+            partner_row = cur.fetchone()
+            if partner_row:
+                p_age, p_gender, p_city, p_interests = partner_row
+                p_interests_text = p_interests if p_interests else "Not set"
+                details_msg = (
+                    f"ℹ️ *Partner Details* (Premium)\n\n"
+                    f"🎂 Age: {p_age}\n"
+                    f"⚧ Gender: {p_gender}\n"
+                    f"🏙 City: {p_city}\n"
+                    f"🎯 Interests: {p_interests_text}"
+                )
+                await bot.send_message(user2, details_msg, parse_mode="Markdown")
+    except Exception as e:
+        logging.error(f"Error showing partner details: {e}")
 
 # ================= MENUS =================
 
@@ -413,14 +456,42 @@ async def find_match_generic(message: types.Message, query_condition, query_para
         partner = None
 
     if not partner:
-        # FIX 2: Add allow_queue flag to prevent filtered searches entering waiting_queue
+        # Send immediate status message
+        status_msg = await message.answer("🔄 Matching with a partner…")
+        
+        # Add to queue if allowed
         if allow_queue and not query_condition:
             waiting_queue.add(uid)
             
-        return await message.answer(
-            "❌ No users found right now. Please try again later.",
-            reply_markup=main_menu
-        )
+            # Import asyncio for timeout
+            import asyncio
+            
+            # Wait 60 seconds for a match
+            await asyncio.sleep(60)
+            
+            # Check if still in queue (not matched)
+            if uid in waiting_queue:
+                waiting_queue.discard(uid)
+                
+                # Set offline status
+                try:
+                    cur.execute("UPDATE users SET is_online=false WHERE user_id=%s", (uid,))
+                except Exception:
+                    pass
+                
+                return await bot.send_message(
+                    uid,
+                    "❌ No users active right now. Please try again later.",
+                    reply_markup=main_menu
+                )
+            # If not in queue anymore, they got matched - do nothing
+            
+        else:
+            # For filtered searches, no queue, just immediate feedback
+            return await message.answer(
+                "❌ No users found right now. Please try again later.",
+                reply_markup=main_menu
+            )
 
     await connect_users(uid, partner[0])
 
@@ -614,6 +685,74 @@ async def process_report(message: types.Message):
     await end_chat(reporter, reported, notify_user1=False, notify_user2=True)
 
     await message.answer("🚨 Report submitted. Thank you.", reply_markup=main_menu)
+
+# ================= PROFILE SHARING =================
+
+@dp.message_handler(commands=["shareprofile"])
+async def shareprofile_cmd(message: types.Message):
+    uid = message.from_user.id
+    
+    # Must be in active chat
+    if uid not in active_chats:
+        return await message.answer("❌ You can only share your profile during an active chat.")
+    
+    # Set confirmation state
+    share_profile_state[uid] = "awaiting_confirmation"
+    
+    await message.answer(
+        "⚠️ *Warning*\n\n"
+        "Sharing your profile may reveal personal details. "
+        "Proceed only if you trust the other user.\n\n"
+        "Type *YES* to confirm sharing your profile, or anything else to cancel.",
+        parse_mode="Markdown"
+    )
+
+@dp.message_handler(lambda m: m.from_user.id in share_profile_state and share_profile_state[m.from_user.id] == "awaiting_confirmation")
+async def shareprofile_confirm(message: types.Message):
+    uid = message.from_user.id
+    response = message.text.strip().upper()
+    
+    # Remove state
+    del share_profile_state[uid]
+    
+    # Check still in chat
+    if uid not in active_chats:
+        return await message.answer("❌ Chat ended. Profile sharing cancelled.")
+    
+    # Check confirmation
+    if response != "YES":
+        return await message.answer("❌ Profile sharing cancelled.")
+    
+    partner_id = active_chats[uid]
+    
+    # Fetch and share user's profile
+    try:
+        cur.execute("""
+            SELECT age, gender, city, interests
+            FROM users WHERE user_id = %s
+        """, (uid,))
+        row = cur.fetchone()
+        
+        if not row:
+            return await message.answer("❌ Profile data not found.")
+        
+        age, gender, city, interests = row
+        interests_text = interests if interests else "Not set"
+        
+        shared_msg = (
+            f"📤 *Partner shared their profile:*\n\n"
+            f"🎂 Age: {age}\n"
+            f"⚧ Gender: {gender}\n"
+            f"🏙 City: {city}\n"
+            f"🎯 Interests: {interests_text}"
+        )
+        
+        await bot.send_message(partner_id, shared_msg, parse_mode="Markdown")
+        await message.answer("✅ Your profile has been shared with your chat partner.")
+        
+    except Exception as e:
+        logging.error(f"Profile sharing error: {e}")
+        await message.answer("❌ Error sharing profile.")
 
 # ================= PREMIUM & PAYMENTS =================
 
