@@ -67,7 +67,7 @@ def is_premium(user_id):
             (user_id,)
         )
         row = cur.fetchone()
-        return row and row[0] and row[0] > datetime.utcnow()
+        return row and row[0] and row[0] > datetime.now()
     except Exception:
         return False
 
@@ -461,7 +461,9 @@ async def find_man(message: types.Message):
         waiting_queue.discard(partner)
         await connect_users(uid, partner)
     else:
-        await message.answer("❌ No users found right now. Please try again later.")
+        waiting_queue.add(uid)
+        await message.answer("🔄 Matching with a partner...", reply_markup=types.ReplyKeyboardRemove())
+        asyncio.create_task(queue_timeout(uid))
 
 @dp.message_handler(text="👩 Find a Woman")
 async def find_woman(message: types.Message):
@@ -501,7 +503,9 @@ async def find_woman(message: types.Message):
         waiting_queue.discard(partner)
         await connect_users(uid, partner)
     else:
-        await message.answer("❌ No users found right now. Please try again later.")
+        waiting_queue.add(uid)
+        await message.answer("🔄 Matching with a partner...", reply_markup=types.ReplyKeyboardRemove())
+        asyncio.create_task(queue_timeout(uid))
 
 @dp.message_handler(text="🎯 Find by Interests")
 async def find_interests(message: types.Message):
@@ -553,7 +557,9 @@ async def find_interests(message: types.Message):
         waiting_queue.discard(partner)
         await connect_users(uid, partner)
     else:
-        await message.answer("❌ No users found right now. Please try again later.")
+        waiting_queue.add(uid)
+        await message.answer("🔄 Matching with a partner...", reply_markup=types.ReplyKeyboardRemove())
+        asyncio.create_task(queue_timeout(uid))
 
 @dp.message_handler(text="🏙 Find in My City")
 async def find_city(message: types.Message):
@@ -597,7 +603,9 @@ async def find_city(message: types.Message):
         waiting_queue.discard(partner)
         await connect_users(uid, partner)
     else:
-        await message.answer("❌ No users found right now. Please try again later.")
+        waiting_queue.add(uid)
+        await message.answer("🔄 Matching with a partner...", reply_markup=types.ReplyKeyboardRemove())
+        asyncio.create_task(queue_timeout(uid))
 
 # ================= RECONNECT =================
 
