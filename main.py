@@ -218,430 +218,438 @@ main_menu.add("⚙ Settings", "🔁 Reconnect")
 
 chat_kb = ReplyKeyboardMarkup(resize_keyboard=True)
 chat_kb.add("🚫 Block", "🚨 Report")
-chat_kb.add("⛔ Stop", "⏭ Next")
-
-# ================= HANDLERS =================
-
-@dp.message_handler(commands=["start"])
-async def start_cmd(message: types.Message):
-    uid = message.from_user.id
-    username = message.from_user.username
-
-    cur.execute("SELECT age FROM users WHERE user_id=%s", (uid,))
-    user = cur.fetchone()
-
-    if user and user[0] is not None:
-        await message.answer(
-            "👋 Welcome back to *Chatogram*",
-            reply_markup=main_menu,
-            parse_mode="Markdown"
-        )
-        return
-
-    # New user → insert and grant 2 hours free premium
-    cur.execute("""
-        INSERT INTO users (user_id, username, premium_until)
-        VALUES (%s, %s, NOW() + INTERVAL '2 hours')
-        ON CONFLICT (user_id) DO NOTHING
-    """, (uid, username))
-
-    onboarding_state[uid] = "age"
-    await message.answer(
-        "👋 Welcome to *Chatogram*\n\nLet’s set up your profile.\n\n📌 Enter your *age*:",
-        parse_mode="Markdown"
-    )
-
-@dp.message_handler(text="⚙ Settings")
-@dp.message_handler(commands=["settings"])
-async def settings_menu(message: types.Message):
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("✏ Edit Profile", "✏ Edit Interests")
-    kb.add("⬅ Back")
-
-    await message.answer(
-        "⚙ *Settings*\nChoose an option:",
-        reply_markup=kb,
-        parse_mode="Markdown"
-    )
-
-@dp.message_handler(text="⬅ Back")
-async def back_to_main(message: types.Message):
-    await message.answer(
-        "⬅ Back to main menu",
-        reply_markup=main_menu
-    )
-
-@dp.message_handler(commands=["profile"])
-@dp.message_handler(text="👤 Profile")
-async def profile(message: types.Message):
-    uid = message.from_user.id
-
-    cur.execute("""
-        SELECT age, gender, city, country, interests, premium_until
-        FROM users WHERE user_id = %s
-    """, (uid,))
-    row = cur.fetchone()
-
-    if not row:
-        await message.answer("❌ Profile not found.")
-        return
-
-    age, gender, city, country, interests, premium_until = row
-
-    interests_text = interests if interests else "Not set"
-    premium_badge = " ⭐" if premium_until and premium_until > datetime.utcnow() else ""
-
-    await message.answer(
-        f"👤 *Your Profile{premium_badge}*\n\n"
-        f"🎂 Age: {age}\n"
-        f"⚧ Gender: {gender}\n"
-        f"🏙 City: {city}\n"
-        f"🌍 Country: {country}\n"
-        f"🎯 Interests: {interests_text}",
-        parse_mode="Markdown"
-    )
-
-@dp.message_handler(text="✏ Edit Profile")
-async def edit_profile_entry(message: types.Message):
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("✏ Edit Age", "✏ Edit Gender")
-    kb.add("✏ Edit City", "✏ Edit Country")
-    kb.add("⬅ Back")
-
-    await message.answer(
-        "✏ *Edit Profile*\nWhat do you want to change?",
-        reply_markup=kb,
-        parse_mode="Markdown"
-    )
-
-# --- Profile Text Edits ---
-@dp.message_handler(text="✏ Edit Age")
-async def edit_age(message: types.Message):
-    user_edit_state[message.from_user.id] = "age"
-    await message.answer("Enter your age:")
-
-@dp.message_handler(text="✏ Edit Gender")
-async def edit_gender(message: types.Message):
-    user_edit_state[message.from_user.id] = "gender"
-    await message.answer("Enter your gender (Male/Female):")
-
-@dp.message_handler(text="✏ Edit City")
-async def edit_city(message: types.Message):
-    user_edit_state[message.from_user.id] = "city"
-    await message.answer("Enter your city:")
-
-@dp.message_handler(text="✏ Edit Country")
-async def edit_country(message: types.Message):
-    user_edit_state[message.from_user.id] = "country"
-    await message.answer("Enter your country:")
-
-# --- Interest System ---
+chat_kb.add("⛔ Stop", "➡ Next")
 
 def get_interest_kb(selected_interests):
     kb = InlineKeyboardMarkup(row_width=2)
-    buttons = []
-    for intr in AVAILABLE_INTERESTS:
-        text = f"✅ {intr}" if intr in selected_interests else intr
-        buttons.append(InlineKeyboardButton(text, callback_data=f"intr_{intr}"))
-    kb.add(*buttons)
-    kb.add(InlineKeyboardButton("💾 Save", callback_data="intr_save"))
+    for interest in AVAILABLE_INTERESTS:
+        prefix = "✅ " if interest in selected_interests else ""
+        kb.insert(
+            InlineKeyboardButton(
+                f"{prefix}{interest}",
+                callback_data=f"toggle_interest:{interest}"
+            )
+        )
+    kb.add(InlineKeyboardButton("✔️ Done", callback_data="interests_done"))
     return kb
 
-@dp.message_handler(text="✏ Edit Interests")
-async def edit_interests(message: types.Message):
-    uid = message.from_user.id
-    cur.execute("SELECT interests FROM users WHERE user_id=%s", (uid,))
-    row = cur.fetchone()
-    current = row[0].split(",") if row and row[0] else []
-    current = [x.strip() for x in current if x.strip()]
-    
-    await message.answer(
-        "🏷 Select your interests:",
-        reply_markup=get_interest_kb(current)
-    )
+# ================= START & REGISTRATION =================
 
-@dp.callback_query_handler(lambda c: c.data.startswith("intr_"))
-async def interest_callback(callback: types.CallbackQuery):
-    action = callback.data.split("_")[1]
+@dp.message_handler(commands=["start"])
+async def start(message: types.Message):
+    uid = message.from_user.id
+    cur.execute("SELECT age, banned FROM users WHERE user_id=%s", (uid,))
+    row = cur.fetchone()
+
+    if row and row[1]:
+        return await message.answer("🚫 You have been banned from using this bot.")
+
+    if not row:
+        cur.execute("""
+            INSERT INTO users (user_id, username, age, gender, city, country, interests, blocked_users, premium_until)
+            VALUES (%s, %s, 0, '', '', '', '', '{}', NOW() + INTERVAL '2 hours')
+        """, (uid, message.from_user.username or ""))
+        
+        onboarding_state[uid] = "age"
+        return await message.answer("Welcome! Let's set up your profile.\n\n🎂 Enter your age:")
+    
+    await message.answer("Welcome back!", reply_markup=main_menu)
+
+# ================= PROFILE MENU =================
+
+@dp.message_handler(text="👤 Profile")
+@dp.message_handler(commands=["profile"])
+async def profile(message: types.Message):
+    uid = message.from_user.id
+    
+    try:
+        cur.execute("""
+            SELECT age, gender, city, country, interests, premium_until
+            FROM users WHERE user_id=%s
+        """, (uid,))
+        row = cur.fetchone()
+        
+        if not row:
+            return await message.answer("❌ No profile found. Please /start again.")
+        
+        age, gender, city, country, interests, premium_until = row
+        
+        premium_text = "⭐ Active" if premium_until and premium_until > datetime.utcnow() else "❌ Not Active"
+        interests_text = interests if interests else "Not set"
+        
+        profile_text = (
+            f"👤 *Your Profile*\n\n"
+            f"🎂 Age: {age}\n"
+            f"⚧ Gender: {gender}\n"
+            f"🏙 City: {city}\n"
+            f"🌍 Country: {country}\n"
+            f"🎯 Interests: {interests_text}\n"
+            f"⭐ Premium: {premium_text}"
+        )
+        
+        await message.answer(profile_text, parse_mode="Markdown", reply_markup=main_menu)
+    except Exception as e:
+        logging.error(f"Profile error: {e}")
+        await message.answer("❌ Error loading profile.")
+
+# ================= SETTINGS =================
+
+@dp.message_handler(text="⚙ Settings")
+@dp.message_handler(commands=["settings"])
+async def settings(message: types.Message):
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("🎂 Edit Age", callback_data="edit_age"))
+    kb.add(InlineKeyboardButton("⚧ Edit Gender", callback_data="edit_gender"))
+    kb.add(InlineKeyboardButton("🏙 Edit City", callback_data="edit_city"))
+    kb.add(InlineKeyboardButton("🌍 Edit Country", callback_data="edit_country"))
+    kb.add(InlineKeyboardButton("🎯 Edit Interests", callback_data="edit_interests"))
+    await message.answer("⚙ Profile Settings:", reply_markup=kb)
+
+@dp.callback_query_handler(lambda c: c.data.startswith("edit_"))
+async def edit_field(callback: types.CallbackQuery):
+    field = callback.data.split("_")[1]
+    
+    if field == "interests":
+        uid = callback.from_user.id
+        try:
+            cur.execute("SELECT interests FROM users WHERE user_id=%s", (uid,))
+            row = cur.fetchone()
+            selected = row[0].split(", ") if row and row[0] else []
+            await callback.message.answer("🏷 Select your interests:", reply_markup=get_interest_kb(selected))
+        except Exception as e:
+            logging.error(f"Interests edit error: {e}")
+            await callback.message.answer("❌ Error loading interests.")
+    else:
+        user_edit_state[callback.from_user.id] = field
+        await callback.message.answer(f"Enter new value for *{field}*:", parse_mode="Markdown")
+    
+    await callback.answer()
+
+@dp.callback_query_handler(lambda c: c.data.startswith("toggle_interest:"))
+async def toggle_interest(callback: types.CallbackQuery):
+    interest = callback.data.split(":")[1]
     uid = callback.from_user.id
     
-    cur.execute("SELECT interests FROM users WHERE user_id=%s", (uid,))
-    row = cur.fetchone()
-    current = row[0].split(",") if row and row[0] else []
-    current = [x.strip() for x in current if x.strip()]
-
-    if action == "save":
-        if uid in onboarding_state and onboarding_state[uid] == "interests":
-            del onboarding_state[uid]
-            await callback.message.answer("✅ Profile setup complete! You can now start chatting.", reply_markup=main_menu)
-            await callback.message.delete()
-        else:
-            await callback.message.answer("✅ Interests saved!", reply_markup=main_menu)
-            await callback.message.delete()
-        return
-
-    # Toggle logic
-    interest = action
-    if interest in current:
-        current.remove(interest)
-    else:
-        limit = 100 if is_premium(uid) else 3
-        if len(current) >= limit:
-            await callback.answer(f"🔒 Free limit reached ({limit}). Upgrade for more!", show_alert=True)
-            return
-        current.append(interest)
-    
-    new_interests_str = ",".join(current)
-    cur.execute("UPDATE users SET interests=%s WHERE user_id=%s", (new_interests_str, uid))
-    
-    await callback.message.edit_reply_markup(reply_markup=get_interest_kb(current))
-
-# ================= MATCHING LOGIC =================
-
-async def find_match_generic(message: types.Message, query_condition, query_params, allow_queue=True):
-    uid = message.from_user.id
-
-    # FIX 1: Set is_online=true BEFORE DB matching
     try:
-        cur.execute("UPDATE users SET is_online=true WHERE user_id=%s", (uid,))
-    except Exception:
-        pass
-
-    # 1. CHECK WAITING QUEUE FIRST
-    # Only use queue for generic searches to ensure specific filters are respected
-    if not query_condition:
-        for waiting_user in list(waiting_queue):
-            if waiting_user == uid:
-                continue
-            
-            # FIX: Validate waiting user (must not be active/banned)
-            if waiting_user in active_chats:
-                waiting_queue.discard(waiting_user)
-                continue
-                
-            try:
-                # Optional: Check if user is actually available/online in DB
-                # This prevents matching with ghost users if they crashed out
-                cur.execute("SELECT is_online, banned FROM users WHERE user_id=%s", (waiting_user,))
-                row = cur.fetchone()
-                if not row or (row[1] is not None and row[1]): # If banned
-                     waiting_queue.discard(waiting_user)
-                     continue
-            except Exception:
-                pass # Fail safe, assume ok or skip? skip to be safe
-                
-            waiting_queue.remove(waiting_user)
-            return await connect_users(uid, waiting_user)
-    
-    # 2. CHECK BLOCKING AND DB MATCH
-    final_query = f"""
-        SELECT user_id FROM users
-        WHERE user_id != %s
-        AND (banned IS NULL OR banned = false)
-        AND (is_online IS NULL OR is_online = true)
-        AND NOT (%s = ANY(COALESCE(blocked_users, '{{}}')))
-        {query_condition}
-        ORDER BY RANDOM()
-        LIMIT 1
-    """
-    
-    # Update params: uid for !=, uid for blocked_users check, then query params
-    full_params = (uid, uid) + query_params
-
-    try:
-        cur.execute(final_query, full_params)
-        partner = cur.fetchone()
-    except Exception as e:
-        logging.error(f"Match Query Error: {e}")
-        partner = None
-
-    if not partner:
-        # Send immediate status message
-        status_msg = await message.answer("🔄 Matching with a partner…")
+        cur.execute("SELECT interests FROM users WHERE user_id=%s", (uid,))
+        row = cur.fetchone()
+        selected = row[0].split(", ") if row and row[0] else []
         
-        # Add to queue if allowed
-        if allow_queue and not query_condition:
-            waiting_queue.add(uid)
-            
-            # Import asyncio for timeout
-            import asyncio
-            
-            # Wait 60 seconds for a match
-            await asyncio.sleep(60)
-            
-            # Check if still in queue (not matched)
-            if uid in waiting_queue:
-                waiting_queue.discard(uid)
-                
-                # Set offline status
-                try:
-                    cur.execute("UPDATE users SET is_online=false WHERE user_id=%s", (uid,))
-                except Exception:
-                    pass
-                
-                return await bot.send_message(
-                    uid,
-                    "❌ No users active right now. Please try again later.",
-                    reply_markup=main_menu
-                )
-            # If not in queue anymore, they got matched - do nothing
-            
+        if interest in selected:
+            selected.remove(interest)
         else:
-            # For filtered searches, no queue, just immediate feedback
-            return await message.answer(
-                "❌ No users found right now. Please try again later.",
-                reply_markup=main_menu
-            )
+            selected.append(interest)
+        
+        await callback.message.edit_reply_markup(reply_markup=get_interest_kb(selected))
+    except Exception as e:
+        logging.error(f"Toggle interest error: {e}")
+    
+    await callback.answer()
 
-    await connect_users(uid, partner[0])
+@dp.callback_query_handler(lambda c: c.data == "interests_done")
+async def interests_done(callback: types.CallbackQuery):
+    uid = callback.from_user.id
+    
+    try:
+        cur.execute("SELECT interests FROM users WHERE user_id=%s", (uid,))
+        row = cur.fetchone()
+        selected = row[0].split(", ") if row and row[0] else []
+        interests_str = ", ".join(selected)
+        
+        cur.execute("UPDATE users SET interests=%s WHERE user_id=%s", (interests_str, uid))
+        
+        if uid in onboarding_state:
+            del onboarding_state[uid]
+            await callback.message.answer("✅ Profile complete!", reply_markup=main_menu)
+        else:
+            await callback.message.answer(f"✅ Interests updated!\n\n🎯 {interests_str}", reply_markup=main_menu)
+    except Exception as e:
+        logging.error(f"Interests done error: {e}")
+        await callback.message.answer("❌ Error saving interests.")
+    
+    await callback.answer()
+
+# ================= MATCHING =================
 
 @dp.message_handler(text="🔍 Find Chat")
 @dp.message_handler(commands=["find"])
 async def find_chat(message: types.Message):
-    await find_match_generic(message, "", (), allow_queue=True)
+    uid = message.from_user.id
+    
+    cur.execute("SELECT banned FROM users WHERE user_id=%s", (uid,))
+    row = cur.fetchone()
+    if row and row[0]:
+        return await message.answer("🚫 You have been banned.")
+    
+    if uid in active_chats:
+        return await message.answer("❌ You are already in a chat. Use ⛔ Stop to end it first.")
+    
+    if uid in waiting_queue:
+        return await message.answer("⏳ Already searching...")
+    
+    blocked_users = get_blocked_users(uid)
+    
+    cur.execute("""
+        SELECT user_id FROM users
+        WHERE user_id != %s
+          AND user_id NOT IN %s
+          AND user_id NOT IN (
+              SELECT unnest(blocked_users) FROM users WHERE user_id = %s
+          )
+          AND banned = false
+    """, (uid, tuple(blocked_users) if blocked_users else (0,), uid))
+    
+    available = [r[0] for r in cur.fetchall() if r[0] in waiting_queue]
+    
+    if available:
+        partner = random.choice(available)
+        waiting_queue.discard(partner)
+        await connect_users(uid, partner)
+    else:
+        waiting_queue.add(uid)
+        await message.answer("⏳ Searching for a match...", reply_markup=types.ReplyKeyboardRemove())
 
 @dp.message_handler(text="👨 Find a Man")
 async def find_man(message: types.Message):
-    if not is_premium(message.from_user.id):
-        return await message.answer("🔒 Subscribe to Premium to use gender matching.")
-    await find_match_generic(message, "AND gender ILIKE 'male'", (), allow_queue=False)
+    uid = message.from_user.id
+    
+    if not is_premium(uid):
+        return await message.answer("⭐ This feature requires Premium.\nType /premium to upgrade.")
+    
+    cur.execute("SELECT banned FROM users WHERE user_id=%s", (uid,))
+    row = cur.fetchone()
+    if row and row[0]:
+        return await message.answer("🚫 You have been banned.")
+    
+    if uid in active_chats:
+        return await message.answer("❌ Already in a chat.")
+    
+    if uid in waiting_queue:
+        return await message.answer("⏳ Already searching...")
+    
+    blocked_users = get_blocked_users(uid)
+    
+    cur.execute("""
+        SELECT user_id FROM users
+        WHERE user_id != %s
+          AND gender = 'Male'
+          AND user_id NOT IN %s
+          AND user_id NOT IN (
+              SELECT unnest(blocked_users) FROM users WHERE user_id = %s
+          )
+          AND banned = false
+    """, (uid, tuple(blocked_users) if blocked_users else (0,), uid))
+    
+    available = [r[0] for r in cur.fetchall() if r[0] in waiting_queue]
+    
+    if available:
+        partner = random.choice(available)
+        waiting_queue.discard(partner)
+        await connect_users(uid, partner)
+    else:
+        waiting_queue.add(uid)
+        await message.answer("⏳ Searching for a man...", reply_markup=types.ReplyKeyboardRemove())
 
 @dp.message_handler(text="👩 Find a Woman")
 async def find_woman(message: types.Message):
-    if not is_premium(message.from_user.id):
-        return await message.answer("🔒 Subscribe to Premium to use gender matching.")
-    await find_match_generic(message, "AND gender ILIKE 'female'", (), allow_queue=False)
-
-@dp.message_handler(text="🏙 Find in My City")
-async def city_menu(message: types.Message):
-    if not is_premium(message.from_user.id):
-        return await message.answer("🔒 Subscribe to Premium to use city matching.")
-    
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("🏙👨 Men in My City", "🏙👩 Women in My City")
-    kb.add("⬅ Back")
-    await message.answer("Choose who you want to chat with:", reply_markup=kb)
-
-@dp.message_handler(lambda m: m.text in ["🏙👨 Men in My City", "🏙👩 Women in My City"])
-async def find_city_gender(message: types.Message):
     uid = message.from_user.id
+    
     if not is_premium(uid):
-        return await message.answer("🔒 Subscribe to Premium.")
-
-    cur.execute("SELECT city FROM users WHERE user_id=%s", (uid,))
+        return await message.answer("⭐ This feature requires Premium.\nType /premium to upgrade.")
+    
+    cur.execute("SELECT banned FROM users WHERE user_id=%s", (uid,))
     row = cur.fetchone()
-    if not row or not row[0]:
-        return await message.answer("❌ Please set your city in Settings first.")
+    if row and row[0]:
+        return await message.answer("🚫 You have been banned.")
     
-    city = row[0]
-    gender_target = 'male' if 'Men' in message.text else 'female'
+    if uid in active_chats:
+        return await message.answer("❌ Already in a chat.")
     
-    await find_match_generic(
-        message, 
-        "AND city ILIKE %s AND gender ILIKE %s", 
-        (city, gender_target),
-        allow_queue=False
-    )
+    if uid in waiting_queue:
+        return await message.answer("⏳ Already searching...")
+    
+    blocked_users = get_blocked_users(uid)
+    
+    cur.execute("""
+        SELECT user_id FROM users
+        WHERE user_id != %s
+          AND gender = 'Female'
+          AND user_id NOT IN %s
+          AND user_id NOT IN (
+              SELECT unnest(blocked_users) FROM users WHERE user_id = %s
+          )
+          AND banned = false
+    """, (uid, tuple(blocked_users) if blocked_users else (0,), uid))
+    
+    available = [r[0] for r in cur.fetchall() if r[0] in waiting_queue]
+    
+    if available:
+        partner = random.choice(available)
+        waiting_queue.discard(partner)
+        await connect_users(uid, partner)
+    else:
+        waiting_queue.add(uid)
+        await message.answer("⏳ Searching for a woman...", reply_markup=types.ReplyKeyboardRemove())
 
 @dp.message_handler(text="🎯 Find by Interests")
-async def find_by_interests(message: types.Message):
+async def find_interests(message: types.Message):
     uid = message.from_user.id
     
-    cur.execute("SELECT interests FROM users WHERE user_id=%s", (uid,))
+    if not is_premium(uid):
+        return await message.answer("⭐ This feature requires Premium.\nType /premium to upgrade.")
+    
+    cur.execute("SELECT banned, interests FROM users WHERE user_id=%s", (uid,))
     row = cur.fetchone()
-    if not row or not row[0]:
-        return await message.answer("❌ Please set your interests in Settings first.")
+    if row and row[0]:
+        return await message.answer("🚫 You have been banned.")
     
-    user_interests = [x.strip() for x in row[0].split(",") if x.strip()]
-    if not user_interests:
-        return await message.answer("❌ You have no interests selected.")
+    my_interests = row[1] if row and row[1] else ""
+    if not my_interests:
+        return await message.answer("❌ Set your interests first in ⚙ Settings.")
+    
+    if uid in active_chats:
+        return await message.answer("❌ Already in a chat.")
+    
+    if uid in waiting_queue:
+        return await message.answer("⏳ Already searching...")
+    
+    blocked_users = get_blocked_users(uid)
+    
+    cur.execute("""
+        SELECT user_id, interests FROM users
+        WHERE user_id != %s
+          AND interests IS NOT NULL
+          AND interests != ''
+          AND user_id NOT IN %s
+          AND user_id NOT IN (
+              SELECT unnest(blocked_users) FROM users WHERE user_id = %s
+          )
+          AND banned = false
+    """, (uid, tuple(blocked_users) if blocked_users else (0,), uid))
+    
+    my_set = set(my_interests.split(", "))
+    candidates = []
+    for r in cur.fetchall():
+        partner_id, partner_interests = r
+        if partner_id in waiting_queue:
+            partner_set = set(partner_interests.split(", "))
+            if my_set & partner_set:
+                candidates.append(partner_id)
+    
+    if candidates:
+        partner = random.choice(candidates)
+        waiting_queue.discard(partner)
+        await connect_users(uid, partner)
+    else:
+        waiting_queue.add(uid)
+        await message.answer("⏳ Searching by interests...", reply_markup=types.ReplyKeyboardRemove())
 
-    # Construct dynamic SQL for interest matching (at least one common interest)
-    # FIX 3: Prevent partial matches using Regex (e.g. "Art" vs "Smart")
-    conditions = []
-    params = []
-    for interest in user_interests:
-        # Regex pattern: start-of-string or comma, optionally space, interest, optionally space, comma or end-of-string
-        conditions.append("interests ~* %s")
-        params.append(fr"(^|,)\s*{interest}\s*(,|$)")
+@dp.message_handler(text="🏙 Find in My City")
+async def find_city(message: types.Message):
+    uid = message.from_user.id
     
-    sql_condition = "AND (" + " OR ".join(conditions) + ")"
+    if not is_premium(uid):
+        return await message.answer("⭐ This feature requires Premium.\nType /premium to upgrade.")
     
-    await find_match_generic(message, sql_condition, tuple(params), allow_queue=False)
+    cur.execute("SELECT banned, city FROM users WHERE user_id=%s", (uid,))
+    row = cur.fetchone()
+    if row and row[0]:
+        return await message.answer("🚫 You have been banned.")
+    
+    my_city = row[1] if row and row[1] else ""
+    if not my_city:
+        return await message.answer("❌ Set your city first in ⚙ Settings.")
+    
+    if uid in active_chats:
+        return await message.answer("❌ Already in a chat.")
+    
+    if uid in waiting_queue:
+        return await message.answer("⏳ Already searching...")
+    
+    blocked_users = get_blocked_users(uid)
+    
+    cur.execute("""
+        SELECT user_id FROM users
+        WHERE user_id != %s
+          AND city = %s
+          AND user_id NOT IN %s
+          AND user_id NOT IN (
+              SELECT unnest(blocked_users) FROM users WHERE user_id = %s
+          )
+          AND banned = false
+    """, (uid, my_city, tuple(blocked_users) if blocked_users else (0,), uid))
+    
+    available = [r[0] for r in cur.fetchall() if r[0] in waiting_queue]
+    
+    if available:
+        partner = random.choice(available)
+        waiting_queue.discard(partner)
+        await connect_users(uid, partner)
+    else:
+        waiting_queue.add(uid)
+        await message.answer(f"⏳ Searching in {my_city}...", reply_markup=types.ReplyKeyboardRemove())
+
+# ================= RECONNECT =================
 
 @dp.message_handler(text="🔁 Reconnect")
-async def reconnect_last_chat(message: types.Message):
+@dp.message_handler(commands=["reconnect"])
+async def reconnect(message: types.Message):
     uid = message.from_user.id
-    if not is_premium(uid):
-        return await message.answer("🔒 Subscribe to Premium to reconnect.")
-
+    
+    if uid in active_chats:
+        return await message.answer("❌ You are already in a chat.")
+    
+    if uid in waiting_queue:
+        return await message.answer("❌ You are already searching.")
+    
     try:
         cur.execute("SELECT last_chat_user_id FROM users WHERE user_id=%s", (uid,))
         row = cur.fetchone()
-
+        
         if not row or not row[0]:
             return await message.answer("❌ No previous chat found.")
         
         partner_id = row[0]
         
-        # Check if user is available
-        cur.execute("SELECT user_id FROM users WHERE user_id=%s AND (banned IS NULL OR banned=false)", (partner_id,))
-        if not cur.fetchone():
-            return await message.answer("❌ User is no longer available.")
-    except Exception as e:
-        logging.error(f"Reconnect DB error: {e}")
-        return await message.answer("❌ Error reconnecting.")
+        if partner_id in active_chats or partner_id in waiting_queue:
+            return await message.answer("❌ Partner is busy.")
+        
+        blocked_users = get_blocked_users(uid)
+        if partner_id in blocked_users:
+            return await message.answer("❌ Cannot reconnect with blocked user.")
+        
+        partner_blocked = get_blocked_users(partner_id)
+        if uid in partner_blocked:
+            return await message.answer("❌ Cannot reconnect.")
+        
+        await connect_users(uid, partner_id)
     
-    # Check if blocked
-    blocked_list = get_blocked_users(uid)
-    if partner_id in blocked_list:
-         return await message.answer("❌ You have blocked this user.")
+    except Exception as e:
+        logging.error(f"Reconnect error: {e}")
+        await message.answer("❌ Reconnect failed.")
 
-    await connect_users(uid, partner_id)
-
-# ================= CHAT CONTROLS =================
+# ================= CHAT ACTIONS =================
 
 @dp.message_handler(text="⛔ Stop")
-@dp.message_handler(commands=["stop"])
 async def stop_chat(message: types.Message):
     uid = message.from_user.id
     
-    # Remove from waiting queue if present
-    if uid in waiting_queue:
-        waiting_queue.discard(uid)
-        try:
-            cur.execute("UPDATE users SET is_online=false WHERE user_id=%s", (uid,))
-        except Exception:
-            pass
-        return await message.answer("❌ Stopped searching.", reply_markup=main_menu)
-    
-    # End active chat if in one
     if uid in active_chats:
         partner = active_chats[uid]
         await end_chat(uid, partner)
     else:
         await message.answer("❌ You are not in a chat.", reply_markup=main_menu)
 
-@dp.message_handler(text="⏭ Next")
-@dp.message_handler(commands=["next"])
+@dp.message_handler(text="➡ Next")
 async def next_chat(message: types.Message):
     uid = message.from_user.id
-    if uid in active_chats:
-        partner = active_chats[uid]
-        # Silently end current chat
-        try:
-            cur.execute("UPDATE users SET is_online=false WHERE user_id IN (%s, %s)", (uid, partner))
-        except Exception: 
-            pass
-            
-        if uid in active_chats: del active_chats[uid]
-        if partner in active_chats: del active_chats[partner]
-        
-        try:
-            await bot.send_message(partner, "❌ Partner skipped. Chat ended.", reply_markup=main_menu)
-        except: pass
-
-    # Find new chat immediately
+    
+    if uid not in active_chats:
+        return await message.answer("❌ You are not in a chat.", reply_markup=main_menu)
+    
+    partner = active_chats[uid]
+    await end_chat(uid, partner)
+    
     await find_chat(message)
 
 @dp.message_handler(text="🚫 Block")
@@ -649,67 +657,108 @@ async def block_user(message: types.Message):
     uid = message.from_user.id
     
     if uid not in active_chats:
-        return await message.answer("❌ You are not in a chat.")
-
-    partner_id = active_chats[uid]
+        return await message.answer("❌ No active chat to block.")
+    
+    partner = active_chats[uid]
     
     try:
         cur.execute("""
-            UPDATE users 
-            SET blocked_users = array_append(COALESCE(blocked_users, '{}'), %s)
-            WHERE user_id = %s
-        """, (partner_id, uid))
+            UPDATE users
+            SET blocked_users = array_append(blocked_users, %s)
+            WHERE user_id = %s AND NOT (%s = ANY(blocked_users))
+        """, (partner, uid, partner))
+        
+        await end_chat(uid, partner)
+        await message.answer("🚫 User blocked.", reply_markup=main_menu)
     except Exception as e:
         logging.error(f"Block error: {e}")
-    
-    await message.answer("🚫 User blocked.")
-    await end_chat(uid, partner_id)
+        await message.answer("❌ Error blocking user.")
 
 @dp.message_handler(text="🚨 Report")
-async def start_report(message: types.Message):
+async def report_init(message: types.Message):
     uid = message.from_user.id
+    
     if uid not in active_chats:
-        return await message.answer("❌ You are not in a chat.")
-
+        return await message.answer("❌ No active chat to report.")
+    
     partner = active_chats[uid]
     report_state[uid] = partner
-    await message.answer("Please describe the issue (spam, abuse, etc):")
+    
+    await message.answer(
+        "🚨 *Report User*\n\n"
+        "Choose a reason:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup().add(
+            InlineKeyboardButton("Spam", callback_data="report_spam"),
+            InlineKeyboardButton("Harassment", callback_data="report_harassment"),
+            InlineKeyboardButton("Inappropriate Content", callback_data="report_inappropriate")
+        )
+    )
 
-@dp.message_handler(lambda m: m.from_user.id in report_state)
-async def process_report(message: types.Message):
-    reporter = message.from_user.id
-    reported = report_state.pop(reporter)
-    reason = message.text
+@dp.callback_query_handler(lambda c: c.data.startswith("report_"))
+async def report_submit(callback: types.CallbackQuery):
+    uid = callback.from_user.id
+    
+    if uid not in report_state:
+        return await callback.answer("❌ Report expired.", show_alert=True)
+    
+    partner = report_state.pop(uid)
     
     try:
         cur.execute("""
-            INSERT INTO reports (reporter_id, reported_id, reason)
-            VALUES (%s, %s, %s)
-        """, (reporter, reported, reason))
-    except: pass
+            UPDATE users
+            SET report_count = COALESCE(report_count, 0) + 1
+            WHERE user_id = %s
+        """, (partner,))
+        
+        if check_and_auto_ban(partner):
+            await bot.send_message(partner, "🚫 You have been banned due to multiple reports.")
+        
+        await callback.message.answer("✅ Report submitted. Thank you.", reply_markup=main_menu)
+    except Exception as e:
+        logging.error(f"Report error: {e}")
+        await callback.message.answer("❌ Error submitting report.")
+    
+    await callback.answer()
 
-    try:
-        cur.execute("UPDATE users SET report_count = COALESCE(report_count, 0) + 1 WHERE user_id=%s", (reported,))
-        check_and_auto_ban(reported)
-    except Exception:
-        pass
+# ================= /STOP COMMAND =================
 
-    # FIX 5: Avoid duplicate messages by not notifying reporter in end_chat
-    await end_chat(reporter, reported, notify_user1=False, notify_user2=True)
-
-    await message.answer("🚨 Report submitted. Thank you.", reply_markup=main_menu)
-
-# ================= PROFILE SHARING =================
-
-@dp.message_handler(commands=["shareprofile"])
-async def shareprofile_cmd(message: types.Message):
+@dp.message_handler(commands=["stop"])
+async def stop_command(message: types.Message):
     uid = message.from_user.id
     
-    # Must be in active chat
+    if uid in active_chats:
+        partner = active_chats[uid]
+        await end_chat(uid, partner)
+    elif uid in waiting_queue:
+        waiting_queue.discard(uid)
+        await message.answer("❌ Search cancelled.", reply_markup=main_menu)
+    else:
+        await message.answer("❌ You are not in a chat or searching.", reply_markup=main_menu)
+
+# ================= /NEXT COMMAND =================
+
+@dp.message_handler(commands=["next"])
+async def next_command(message: types.Message):
+    uid = message.from_user.id
+    
+    if uid not in active_chats:
+        return await message.answer("❌ You are not in a chat.", reply_markup=main_menu)
+    
+    partner = active_chats[uid]
+    await end_chat(uid, partner)
+    
+    await find_chat(message)
+
+# ================= /SHAREPROFILE COMMAND =================
+
+@dp.message_handler(commands=["shareprofile"])
+async def shareprofile_init(message: types.Message):
+    uid = message.from_user.id
+    
     if uid not in active_chats:
         return await message.answer("❌ You can only share your profile during an active chat.")
     
-    # Set confirmation state
     share_profile_state[uid] = "awaiting_confirmation"
     
     await message.answer(
@@ -725,20 +774,16 @@ async def shareprofile_confirm(message: types.Message):
     uid = message.from_user.id
     response = message.text.strip().upper()
     
-    # Remove state
     del share_profile_state[uid]
     
-    # Check still in chat
     if uid not in active_chats:
         return await message.answer("❌ Chat ended. Profile sharing cancelled.")
     
-    # Check confirmation
     if response != "YES":
         return await message.answer("❌ Profile sharing cancelled.")
     
     partner_id = active_chats[uid]
     
-    # Fetch and share user's profile
     try:
         cur.execute("""
             SELECT age, gender, city, interests
@@ -789,7 +834,7 @@ async def buy_callback(callback: types.CallbackQuery):
         title="Chatogram Premium ⭐",
         description=f"Premium access for {days} days",
         payload=f"premium_{days}",
-        provider_token="", # Empty for Telegram Stars
+        provider_token="",
         currency="XTR",
         prices=[LabeledPrice("Premium", stars)]
     )
@@ -901,7 +946,6 @@ async def rules(message: types.Message):
 # Catch-all for active chat messages
 @dp.message_handler(content_types=ContentType.ANY)
 async def chat_relay(message: types.Message):
-    # FIX 4: Ensure chat_relay ignores slash commands
     if message.text and message.text.startswith('/'):
         return
 
@@ -921,6 +965,9 @@ async def on_startup(dp):
         types.BotCommand("settings", "Edit Profile"),
         types.BotCommand("premium", "Get Premium"),
         types.BotCommand("rules", "Read Rules"),
+        types.BotCommand("stop", "Stop Current Chat"),
+        types.BotCommand("next", "Next Chat"),
+        types.BotCommand("shareprofile", "Share Your Profile"),
     ])
 
 if __name__ == "__main__":
