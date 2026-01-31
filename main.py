@@ -2,6 +2,7 @@ import logging
 import os
 import psycopg2
 import random
+import asyncio
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, executor, types
 from aiogram.types import (
@@ -102,6 +103,15 @@ def check_and_auto_ban(user_id):
         return False
     except Exception:
         return False
+
+async def queue_timeout(uid):
+    await asyncio.sleep(60)
+    if uid in waiting_queue:
+        waiting_queue.discard(uid)
+        try:
+            await bot.send_message(uid, "❌ No users active right now. Please try again later.", reply_markup=main_menu)
+        except Exception:
+            pass
 
 async def end_chat(user1, user2, notify_user1=True, notify_user2=True):
     """Safely disconnect two users and notify them."""
@@ -338,6 +348,9 @@ async def toggle_interest(callback: types.CallbackQuery):
         if interest in selected:
             selected.remove(interest)
         else:
+            if not is_premium(uid) and len(selected) >= 3:
+                await callback.answer("❌ Free users can select up to 3 interests.", show_alert=True)
+                return
             selected.append(interest)
         
         await callback.message.edit_reply_markup(reply_markup=get_interest_kb(selected))
@@ -407,7 +420,8 @@ async def find_chat(message: types.Message):
         await connect_users(uid, partner)
     else:
         waiting_queue.add(uid)
-        await message.answer("⏳ Searching for a match...", reply_markup=types.ReplyKeyboardRemove())
+        await message.answer("🔄 Matching with a partner...", reply_markup=types.ReplyKeyboardRemove())
+        asyncio.create_task(queue_timeout(uid))
 
 @dp.message_handler(text="👨 Find a Man")
 async def find_man(message: types.Message):
@@ -447,8 +461,7 @@ async def find_man(message: types.Message):
         waiting_queue.discard(partner)
         await connect_users(uid, partner)
     else:
-        waiting_queue.add(uid)
-        await message.answer("⏳ Searching for a man...", reply_markup=types.ReplyKeyboardRemove())
+        await message.answer("❌ No users found right now. Please try again later.")
 
 @dp.message_handler(text="👩 Find a Woman")
 async def find_woman(message: types.Message):
@@ -488,8 +501,7 @@ async def find_woman(message: types.Message):
         waiting_queue.discard(partner)
         await connect_users(uid, partner)
     else:
-        waiting_queue.add(uid)
-        await message.answer("⏳ Searching for a woman...", reply_markup=types.ReplyKeyboardRemove())
+        await message.answer("❌ No users found right now. Please try again later.")
 
 @dp.message_handler(text="🎯 Find by Interests")
 async def find_interests(message: types.Message):
@@ -541,8 +553,7 @@ async def find_interests(message: types.Message):
         waiting_queue.discard(partner)
         await connect_users(uid, partner)
     else:
-        waiting_queue.add(uid)
-        await message.answer("⏳ Searching by interests...", reply_markup=types.ReplyKeyboardRemove())
+        await message.answer("❌ No users found right now. Please try again later.")
 
 @dp.message_handler(text="🏙 Find in My City")
 async def find_city(message: types.Message):
@@ -586,8 +597,7 @@ async def find_city(message: types.Message):
         waiting_queue.discard(partner)
         await connect_users(uid, partner)
     else:
-        waiting_queue.add(uid)
-        await message.answer(f"⏳ Searching in {my_city}...", reply_markup=types.ReplyKeyboardRemove())
+        await message.answer("❌ No users found right now. Please try again later.")
 
 # ================= RECONNECT =================
 
