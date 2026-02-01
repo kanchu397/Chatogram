@@ -440,6 +440,17 @@ async def start(message: types.Message):
             VALUES (%s, %s, 0, '', '', '', '', '{}', NOW() + INTERVAL '2 hours', %s)
         """, (uid, message.from_user.username or "", referrer_id))
         
+        # Free Premium Message
+        await message.answer(
+            "🎉 *Free Premium Activated!*\n"
+            "You have access to premium features for 2 hours:\n"
+            "⭐ Gender filters\n"
+            "⭐ City-based matching\n"
+            "⭐ Interest-based matching\n\n"
+            "Try it out and see the difference 👀",
+            parse_mode="Markdown"
+        )
+        
         onboarding_state[uid] = "age"
         return await message.answer("Welcome! Let's set up your profile.\n\n🎂 Enter your age:")
     
@@ -1055,7 +1066,7 @@ async def find_woman_city(message: types.Message):
         await message.answer(f"🔄 Looking for a woman in {my_city}...", reply_markup=types.ReplyKeyboardRemove())
         asyncio.create_task(queue_timeout(uid))
 
-@dp.message_handler(text="�🔁 Reconnect")
+@dp.message_handler(text="�� Reconnect")
 async def reconnect(message: types.Message):
     uid = message.from_user.id
     
