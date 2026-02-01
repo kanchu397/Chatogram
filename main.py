@@ -1280,6 +1280,44 @@ async def save_profile_edit(message: types.Message):
     except Exception as e:
         await message.answer("❌ Error updating profile.")
 
+@dp.message_handler(commands=["stats"])
+async def admin_stats(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    
+    try:
+        cur.execute("SELECT COUNT(*) FROM users")
+        total_users = cur.fetchone()[0]
+        
+        cur.execute("SELECT COUNT(*) FROM users WHERE is_online=true")
+        active_today = cur.fetchone()[0]
+        
+        cur.execute("SELECT COUNT(*) FROM users WHERE premium_until > NOW()")
+        premium_users = cur.fetchone()[0]
+        
+        cur.execute("SELECT SUM(referral_count) FROM users")
+        row = cur.fetchone()
+        referrals = row[0] if row and row[0] else 0
+        
+        cur.execute("SELECT SUM(report_count) FROM users")
+        row = cur.fetchone()
+        reports = row[0] if row and row[0] else 0
+        
+        chats_today = len(active_chats) // 2
+        
+        text = (
+            "📊 *Statistics*\n\n"
+            f"👥 Total Users: {total_users}\n"
+            f"⚡ Active Today: {active_today}\n"
+            f"💬 Chats Today: {chats_today}\n"
+            f"⭐ Premium Users: {premium_users}\n"
+            f"🔗 Referrals Today: {referrals}\n"
+            f"🚨 Reports Today: {reports}"
+        )
+        await message.answer(text, parse_mode="Markdown")
+    except Exception as e:
+        logging.error(f"Stats error: {e}")
+        await message.answer("❌ Error fetching stats.")
+
 @dp.message_handler(commands=["addpremium"])
 async def add_premium_admin(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
@@ -1292,6 +1330,11 @@ async def add_premium_admin(message: types.Message):
             SET premium_until = COALESCE(premium_until, NOW()) + INTERVAL '%s days'
             WHERE user_id = %s
         """, (days, uid))
+        
+        try:
+            await bot.send_message(uid, "⭐ Premium activated.")
+        except: pass
+        
         await message.answer(f"⭐ Added {days} days to {uid}")
     except:
         await message.answer("Usage: /addpremium <uid> <days>")
@@ -1305,6 +1348,16 @@ async def ban_user_admin(message: types.Message):
         await message.answer(f"🚫 User {uid} banned.")
     except:
         await message.answer("Usage: /ban <uid>")
+
+@dp.message_handler(commands=["unban"])
+async def unban_user_admin(message: types.Message):
+    if message.from_user.id != ADMIN_ID: return
+    try:
+        uid = int(message.get_args())
+        cur.execute("UPDATE users SET banned=false WHERE user_id=%s", (uid,))
+        await message.answer(f"✅ User {uid} unbanned.")
+    except:
+        await message.answer("Usage: /unban <uid>")
 
 # ================= ONBOARDING =================
 
