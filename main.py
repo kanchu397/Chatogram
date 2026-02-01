@@ -40,6 +40,12 @@ waiting_queue = set()   # Users waiting for random match
 report_state = {}       # {reporter_id: reported_id}
 share_profile_state = {}  # {user_id: "awaiting_confirmation"} - for /shareprofile flow
 
+upsell_shown = set()      # {user_id} - Track upsells
+expiry_reminded = set()   # {user_id} - Track reminders
+
+upsell_kb = ReplyKeyboardMarkup(resize_keyboard=True)
+upsell_kb.add("⭐ Buy Premium", "⬅ Back to Menu")
+
 # Predefined Interests for Selection
 AVAILABLE_INTERESTS = [
     "Music", "Movies", "Sports", "Gaming", "Travel", 
@@ -168,8 +174,11 @@ async def connect_users(user1, user2):
     
     # Notify both users
     try:
-        await bot.send_message(user1, "✅ Match found! Start chatting...", reply_markup=chat_kb)
-        await bot.send_message(user2, "✅ Match found! Start chatting...", reply_markup=chat_kb)
+        p1_badge = " (⭐ Premium User)" if is_premium(user1) else ""
+        p2_badge = " (⭐ Premium User)" if is_premium(user2) else ""
+        
+        await bot.send_message(user1, f"✅ Match found! Start chatting...{p1_badge}", reply_markup=chat_kb)
+        await bot.send_message(user2, f"✅ Match found! Start chatting...{p2_badge}", reply_markup=chat_kb)
     except Exception:
         # If a user blocked the bot, force disconnect
         await end_chat(user1, user2)
@@ -194,6 +203,8 @@ async def connect_users(user1, user2):
                     f"🎯 Interests: {p_interests_text}"
                 )
                 await bot.send_message(user1, details_msg, parse_mode="Markdown")
+        else:
+            await bot.send_message(user1, "🔒 Partner details hidden.\nUpgrade to Premium to see Age, Gender, City, and Interests.")
         
         # Check if user2 is premium
         if is_premium(user2):
@@ -213,6 +224,8 @@ async def connect_users(user1, user2):
                     f"🎯 Interests: {p_interests_text}"
                 )
                 await bot.send_message(user2, details_msg, parse_mode="Markdown")
+        else:
+            await bot.send_message(user2, "🔒 Partner details hidden.\nUpgrade to Premium to see Age, Gender, City, and Interests.")
     except Exception as e:
         logging.error(f"Error showing partner details: {e}")
 
@@ -241,6 +254,18 @@ async def open_premium_menu(message: types.Message):
         return await message.answer("❌ Finish your current chat/search first.")
 
     if not is_premium(uid):
+        if uid not in upsell_shown:
+            upsell_shown.add(uid)
+            await message.answer(
+                "⭐ *Unlock Premium Logic*\n\n"
+                "• Find by Gender (Man/Woman)\n"
+                "• Find by Interests & City\n"
+                "• See Partner Details\n"
+                "• No Ads & Priority Support",
+                parse_mode="Markdown",
+                reply_markup=upsell_kb
+            )
+            return
         return await message.answer("⭐ This feature requires Premium.")
     await message.answer("💎 Choose an option:", reply_markup=premium_submenu)
 
@@ -285,6 +310,18 @@ async def start(message: types.Message):
         onboarding_state[uid] = "age"
         return await message.answer("Welcome! Let's set up your profile.\n\n🎂 Enter your age:")
     
+    # Premium Expiry Reminder
+    try:
+        cur.execute("SELECT premium_until FROM users WHERE user_id=%s", (uid,))
+        p_row = cur.fetchone()
+        if p_row and p_row[0] and p_row[0] > datetime.now():
+            time_left = p_row[0] - datetime.now()
+            if time_left < timedelta(hours=24) and uid not in expiry_reminded:
+                expiry_reminded.add(uid)
+                await message.answer("⚠️ Your Premium expires in less than 24 hours! Renew now to keep benefits.")
+    except Exception:
+        pass
+
     await message.answer("Welcome back!", reply_markup=get_main_menu(uid))
 
 # ================= PROFILE MENU =================
@@ -306,7 +343,14 @@ async def profile(message: types.Message):
         
         age, gender, city, country, interests, premium_until = row
         
-        premium_text = "⭐ Active" if premium_until and premium_until > datetime.now() else "❌ Not Active"
+        premium_text = "⭐ Premium User" if premium_until and premium_until > datetime.now() else "❌ Not Active"
+        
+        # Premium Expiry Reminder
+        if premium_until and premium_until > datetime.now():
+            time_left = premium_until - datetime.now()
+            if time_left < timedelta(hours=24) and uid not in expiry_reminded:
+                expiry_reminded.add(uid)
+                await message.answer("⚠️ Your Premium expires in less than 24 hours! Renew now to keep benefits.")
         interests_text = interests if interests else "Not set"
         
         profile_text = (
@@ -450,6 +494,18 @@ async def find_man(message: types.Message):
     uid = message.from_user.id
     
     if not is_premium(uid):
+        if uid not in upsell_shown:
+            upsell_shown.add(uid)
+            await message.answer(
+                "⭐ *Unlock Premium Logic*\n\n"
+                "• Find by Gender (Man/Woman)\n"
+                "• Find by Interests & City\n"
+                "• See Partner Details\n"
+                "• No Ads & Priority Support",
+                parse_mode="Markdown",
+                reply_markup=upsell_kb
+            )
+            return
         return await message.answer("⭐ This feature requires Premium.\nType /premium to upgrade.")
     
     cur.execute("SELECT banned FROM users WHERE user_id=%s", (uid,))
@@ -492,6 +548,18 @@ async def find_woman(message: types.Message):
     uid = message.from_user.id
     
     if not is_premium(uid):
+        if uid not in upsell_shown:
+            upsell_shown.add(uid)
+            await message.answer(
+                "⭐ *Unlock Premium Logic*\n\n"
+                "• Find by Gender (Man/Woman)\n"
+                "• Find by Interests & City\n"
+                "• See Partner Details\n"
+                "• No Ads & Priority Support",
+                parse_mode="Markdown",
+                reply_markup=upsell_kb
+            )
+            return
         return await message.answer("⭐ This feature requires Premium.\nType /premium to upgrade.")
     
     cur.execute("SELECT banned FROM users WHERE user_id=%s", (uid,))
@@ -534,6 +602,18 @@ async def find_interests(message: types.Message):
     uid = message.from_user.id
     
     if not is_premium(uid):
+        if uid not in upsell_shown:
+            upsell_shown.add(uid)
+            await message.answer(
+                "⭐ *Unlock Premium Logic*\n\n"
+                "• Find by Gender (Man/Woman)\n"
+                "• Find by Interests & City\n"
+                "• See Partner Details\n"
+                "• No Ads & Priority Support",
+                parse_mode="Markdown",
+                reply_markup=upsell_kb
+            )
+            return
         return await message.answer("⭐ This feature requires Premium.\nType /premium to upgrade.")
     
     cur.execute("SELECT banned, interests FROM users WHERE user_id=%s", (uid,))
@@ -588,6 +668,18 @@ async def find_city(message: types.Message):
     uid = message.from_user.id
     
     if not is_premium(uid):
+        if uid not in upsell_shown:
+            upsell_shown.add(uid)
+            await message.answer(
+                "⭐ *Unlock Premium Logic*\n\n"
+                "• Find by Gender (Man/Woman)\n"
+                "• Find by Interests & City\n"
+                "• See Partner Details\n"
+                "• No Ads & Priority Support",
+                parse_mode="Markdown",
+                reply_markup=upsell_kb
+            )
+            return
         return await message.answer("⭐ This feature requires Premium.\nType /premium to upgrade.")
     
     cur.execute("SELECT banned, city FROM users WHERE user_id=%s", (uid,))
