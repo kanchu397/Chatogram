@@ -44,6 +44,9 @@ upsell_shown = set()      # {user_id} - Track upsells
 expiry_reminded = set()   # {user_id} - Track reminders
 safety_shown = set()      # {user_id} - Track safety notices
 
+chat_start_times = {}     # {user_id: datetime}
+skip_history = {}         # {user_id: [timestamps]}
+
 upsell_kb = ReplyKeyboardMarkup(resize_keyboard=True)
 upsell_kb.add("⭐ Buy Premium", "⬅ Back to Menu")
 
@@ -61,11 +64,32 @@ try:
     conn = psycopg2.connect(DATABASE_URL)
     conn.autocommit = True
     cur = conn.cursor()
+    
+    # Reputation Schema Check
+    try:
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reputation_score INTEGER DEFAULT 0")
+    except Exception as e:
+        logging.error(f"DB Schema Update Error: {e}")
+
 except Exception as e:
     logging.error(f"Database connection failed: {e}")
     exit(1)
 
 # ================= HELPERS ===========================
+
+def update_reputation(user_id, delta):
+    try:
+        cur.execute("UPDATE users SET reputation_score = reputation_score + %s WHERE user_id=%s", (delta, user_id))
+    except Exception as e:
+        logging.error(f"Reputation update error: {e}")
+
+async def reputation_decay_task():
+    while True:
+        await asyncio.sleep(7 * 24 * 3600)  # 7 days
+        try:
+            cur.execute("UPDATE users SET reputation_score = GREATEST(0, reputation_score - 1)")
+        except Exception as e:
+            logging.error(f"Reputation decay error: {e}")
 
 def is_premium(user_id):
     try:
@@ -122,6 +146,17 @@ async def queue_timeout(uid):
 
 async def end_chat(user1, user2, notify_user1=True, notify_user2=True):
     """Safely disconnect two users and notify them."""
+    
+    # Reputation Reward: Chat duration > 3 minutes -> +1
+    start_time = chat_start_times.pop(user1, None)
+    _ = chat_start_times.pop(user2, None)
+    
+    if start_time:
+        duration = (datetime.now() - start_time).total_seconds()
+        if duration > 180:
+            update_reputation(user1, 1)
+            update_reputation(user2, 1)
+
     # Update DB status with safety check
     try:
         cur.execute("UPDATE users SET is_online=false WHERE user_id IN (%s, %s)", (user1, user2))
@@ -152,6 +187,9 @@ async def connect_users(user1, user2):
 
     active_chats[user1] = user2
     active_chats[user2] = user1
+    
+    chat_start_times[user1] = datetime.now()
+    chat_start_times[user2] = datetime.now()
     
     # Remove from waiting queue if present
     waiting_queue.discard(user1)
@@ -483,7 +521,7 @@ async def find_chat(message: types.Message):
     blocked_users = get_blocked_users(uid)
     
     cur.execute("""
-        SELECT user_id, report_count FROM users
+        SELECT user_id, report_count, reputation_score FROM users
         WHERE user_id != %s
           AND user_id NOT IN %s
           AND user_id NOT IN (
@@ -494,29 +532,34 @@ async def find_chat(message: types.Message):
     """, (uid, tuple(blocked_users) if blocked_users else (0,), uid, uid))
     
     candidates = cur.fetchall()
-    available = []
+    preferred = []
+    others = []
     
     for r in candidates:
         pid = r[0]
+        rpt = r[1] or 0
+        score = r[2] or 0
+        
         if pid not in waiting_queue: continue
         
-        # Safety Priority System
-        rpt = r[1] or 0
-        if rpt >= 5: continue  # Exclude dangerous users
+        # Safety & Reputation Checks
+        if rpt >= 5: continue
+        if score <= -10: continue # Shadow ban
         
-        # Reduced priority for >=3 reports (simple filter for now)
-        # For random chat, we might still allow them but maybe later
-        # For now, we'll allow them in random chat but they are "risky"
-        available.append(pid)
-        
-    if available:
-        # Prioritize safer users if possible
-        safe_users = [pid for pid in available if (next((x[1] for x in candidates if x[0] == pid), 0) or 0) < 3]
-        if safe_users:
-            partner = random.choice(safe_users)
+        if score >= -5:
+            preferred.append((pid, score))
         else:
-            partner = random.choice(available)
+            others.append((pid, score))
             
+    if preferred:
+        preferred.sort(key=lambda x: x[1], reverse=True)
+        top_n = max(1, int(len(preferred) * 0.75))
+        partner = random.choice(preferred[:top_n])[0]
+        
+        waiting_queue.discard(partner)
+        await connect_users(uid, partner)
+    elif others:
+        partner = random.choice(others)[0]
         waiting_queue.discard(partner)
         await connect_users(uid, partner)
     else:
@@ -557,7 +600,7 @@ async def find_man(message: types.Message):
     blocked_users = get_blocked_users(uid)
     
     cur.execute("""
-        SELECT user_id, report_count FROM users
+        SELECT user_id, report_count, reputation_score FROM users
         WHERE user_id != %s
           AND gender = 'Male'
           AND user_id NOT IN %s
@@ -569,21 +612,27 @@ async def find_man(message: types.Message):
     """, (uid, tuple(blocked_users) if blocked_users else (0,), uid, uid))
     
     candidates = cur.fetchall()
-    available = []
+    preferred = []
     
     for r in candidates:
         pid = r[0]
+        rpt = r[1] or 0
+        score = r[2] or 0
+        
         if pid not in waiting_queue: continue
         
-        # Safety Priority System
-        rpt = r[1] or 0
-        if rpt >= 5: continue  # Exclude dangerous users
-        if rpt >= 3: continue  # Exclude from premium matches
+        # Safety & Reputation Checks
+        if rpt >= 5: continue
+        if rpt >= 3: continue
+        if score < 0: continue # Premium Requirement
         
-        available.append(pid)
+        preferred.append((pid, score))
     
-    if available:
-        partner = random.choice(available)
+    if preferred:
+        preferred.sort(key=lambda x: x[1], reverse=True)
+        top_n = max(1, int(len(preferred) * 0.75))
+        partner = random.choice(preferred[:top_n])[0]
+        
         waiting_queue.discard(partner)
         await connect_users(uid, partner)
     else:
@@ -624,7 +673,7 @@ async def find_woman(message: types.Message):
     blocked_users = get_blocked_users(uid)
     
     cur.execute("""
-        SELECT user_id, report_count FROM users
+        SELECT user_id, report_count, reputation_score FROM users
         WHERE user_id != %s
           AND gender = 'Female'
           AND user_id NOT IN %s
@@ -636,21 +685,27 @@ async def find_woman(message: types.Message):
     """, (uid, tuple(blocked_users) if blocked_users else (0,), uid, uid))
     
     candidates = cur.fetchall()
-    available = []
+    preferred = []
     
     for r in candidates:
         pid = r[0]
+        rpt = r[1] or 0
+        score = r[2] or 0
+        
         if pid not in waiting_queue: continue
         
-        # Safety Priority System
-        rpt = r[1] or 0
-        if rpt >= 5: continue  # Exclude dangerous users
-        if rpt >= 3: continue  # Exclude from premium matches
+        # Safety & Reputation Checks
+        if rpt >= 5: continue
+        if rpt >= 3: continue
+        if score < 0: continue # Premium Requirement
         
-        available.append(pid)
+        preferred.append((pid, score))
     
-    if available:
-        partner = random.choice(available)
+    if preferred:
+        preferred.sort(key=lambda x: x[1], reverse=True)
+        top_n = max(1, int(len(preferred) * 0.75))
+        partner = random.choice(preferred[:top_n])[0]
+        
         waiting_queue.discard(partner)
         await connect_users(uid, partner)
     else:
@@ -695,7 +750,7 @@ async def find_interests(message: types.Message):
     blocked_users = get_blocked_users(uid)
     
     cur.execute("""
-        SELECT user_id, interests, report_count FROM users
+        SELECT user_id, interests, report_count, reputation_score FROM users
         WHERE user_id != %s
           AND interests IS NOT NULL
           AND interests != ''
@@ -708,21 +763,28 @@ async def find_interests(message: types.Message):
     """, (uid, tuple(blocked_users) if blocked_users else (0,), uid, uid))
     
     my_set = set(my_interests.split(", "))
-    candidates = []
+    preferred = []
+    
     for r in cur.fetchall():
-        partner_id, partner_interests, report_count = r
+        partner_id, partner_interests, report_count, score = r
+        score = score or 0
+        
         if partner_id in waiting_queue:
-            # Safety Priority System
+            # Safety & Reputation Checks
             rpt = report_count or 0
-            if rpt >= 5: continue  # Exclude dangerous users
-            if rpt >= 3: continue  # Exclude from premium matches
+            if rpt >= 5: continue
+            if rpt >= 3: continue
+            if score < 0: continue # Premium Requirement
 
             partner_set = set(partner_interests.split(", "))
             if my_set & partner_set:
-                candidates.append(partner_id)
+                preferred.append((partner_id, score))
     
-    if candidates:
-        partner = random.choice(candidates)
+    if preferred:
+        preferred.sort(key=lambda x: x[1], reverse=True)
+        top_n = max(1, int(len(preferred) * 0.75))
+        partner = random.choice(preferred[:top_n])[0]
+        
         waiting_queue.discard(partner)
         await connect_users(uid, partner)
     else:
@@ -767,7 +829,7 @@ async def find_city(message: types.Message):
     blocked_users = get_blocked_users(uid)
     
     cur.execute("""
-        SELECT user_id, report_count FROM users
+        SELECT user_id, report_count, reputation_score FROM users
         WHERE user_id != %s
           AND city = %s
           AND user_id NOT IN %s
@@ -779,21 +841,27 @@ async def find_city(message: types.Message):
     """, (uid, my_city, tuple(blocked_users) if blocked_users else (0,), uid, uid))
     
     candidates = cur.fetchall()
-    available = []
+    preferred = []
     
     for r in candidates:
         pid = r[0]
+        rpt = r[1] or 0
+        score = r[2] or 0
+        
         if pid not in waiting_queue: continue
         
-        # Safety Priority System
-        rpt = r[1] or 0
-        if rpt >= 5: continue  # Exclude dangerous users
-        if rpt >= 3: continue  # Exclude from premium matches
+        # Safety & Reputation Checks
+        if rpt >= 5: continue
+        if rpt >= 3: continue
+        if score < 0: continue # Premium Requirement
         
-        available.append(pid)
+        preferred.append((pid, score))
     
-    if available:
-        partner = random.choice(available)
+    if preferred:
+        preferred.sort(key=lambda x: x[1], reverse=True)
+        top_n = max(1, int(len(preferred) * 0.75))
+        partner = random.choice(preferred[:top_n])[0]
+        
         waiting_queue.discard(partner)
         await connect_users(uid, partner)
     else:
@@ -834,6 +902,7 @@ async def reconnect(message: types.Message):
         if uid in partner_blocked:
             return await message.answer("❌ Cannot reconnect.")
         
+        update_reputation(uid, 2)
         await connect_users(uid, partner_id)
     
     except Exception as e:
@@ -848,6 +917,17 @@ async def stop_chat(message: types.Message):
     
     if uid in active_chats:
         partner = active_chats[uid]
+        
+        # Reputation Logic
+        start = chat_start_times.get(uid)
+        if start:
+            duration = (datetime.now() - start).total_seconds()
+            if duration < 10:
+                update_reputation(uid, -1)
+        
+        if is_premium(uid):
+            update_reputation(uid, 2)
+            
         await end_chat(uid, partner)
     else:
         await message.answer("❌ You are not in a chat.", reply_markup=get_main_menu(uid))
@@ -860,6 +940,29 @@ async def next_chat(message: types.Message):
         return await message.answer("❌ You are not in a chat.", reply_markup=get_main_menu(uid))
     
     partner = active_chats[uid]
+    
+    # Reputation Logic
+    start = chat_start_times.get(uid)
+    if start:
+        duration = (datetime.now() - start).total_seconds()
+        if duration < 10:
+            update_reputation(uid, -1)
+            
+    if is_premium(uid):
+        update_reputation(uid, 2)
+        
+    update_reputation(partner, 1) # Partner pressed next -> +1
+    
+    # Rapid Skips Logic
+    now = datetime.now()
+    history = skip_history.get(uid, [])
+    history = [t for t in history if (now - t).total_seconds() < 60]
+    history.append(now)
+    skip_history[uid] = history
+    
+    if len(history) > 3:
+        update_reputation(uid, -2)
+    
     await end_chat(uid, partner)
     
     await find_chat(message)
@@ -880,6 +983,7 @@ async def block_user(message: types.Message):
             WHERE user_id = %s AND NOT (%s = ANY(blocked_users))
         """, (partner, uid, partner))
         
+        update_reputation(partner, -5)
         await end_chat(uid, partner)
         await message.answer("🚫 User blocked.", reply_markup=get_main_menu(uid))
     except Exception as e:
@@ -925,6 +1029,8 @@ async def report_submit(callback: types.CallbackQuery):
         
         logging.info(f"REPORT: {uid} reported {partner} for {callback.data} at {datetime.now()}")
         
+        update_reputation(partner, -3)
+        
         # if check_and_auto_ban(partner):
         #    await bot.send_message(partner, "🚫 You have been banned due to multiple reports.")
         
@@ -943,6 +1049,17 @@ async def stop_command(message: types.Message):
     
     if uid in active_chats:
         partner = active_chats[uid]
+        
+        # Reputation Logic
+        start = chat_start_times.get(uid)
+        if start:
+            duration = (datetime.now() - start).total_seconds()
+            if duration < 10:
+                update_reputation(uid, -1)
+        
+        if is_premium(uid):
+            update_reputation(uid, 2)
+            
         await end_chat(uid, partner)
     elif uid in waiting_queue:
         waiting_queue.discard(uid)
@@ -960,6 +1077,29 @@ async def next_command(message: types.Message):
         return await message.answer("❌ You are not in a chat.", reply_markup=get_main_menu(uid))
     
     partner = active_chats[uid]
+    
+    # Reputation Logic
+    start = chat_start_times.get(uid)
+    if start:
+        duration = (datetime.now() - start).total_seconds()
+        if duration < 10:
+            update_reputation(uid, -1)
+            
+    if is_premium(uid):
+        update_reputation(uid, 2)
+        
+    update_reputation(partner, 1)
+    
+    # Rapid Skips Logic
+    now = datetime.now()
+    history = skip_history.get(uid, [])
+    history = [t for t in history if (now - t).total_seconds() < 60]
+    history.append(now)
+    skip_history[uid] = history
+    
+    if len(history) > 3:
+        update_reputation(uid, -2)
+
     await end_chat(uid, partner)
     
     await find_chat(message)
@@ -1172,6 +1312,7 @@ async def chat_relay(message: types.Message):
             await end_chat(uid, partner)
 
 async def on_startup(dp):
+    asyncio.create_task(reputation_decay_task())
     await bot.set_my_commands([
         types.BotCommand("start", "Start/Restart"),
         types.BotCommand("find", "Random Chat"),
