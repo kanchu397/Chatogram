@@ -353,7 +353,8 @@ async def connect_users(user1, user2):
 
 premium_submenu = ReplyKeyboardMarkup(resize_keyboard=True)
 premium_submenu.add("👨 Find a Man", "👩 Find a Woman")
-premium_submenu.add("🎯 Find by Interests", "🏙 Find in My City")
+premium_submenu.add("👨📍 Find Man in My City", "👩📍 Find Woman in My City")
+premium_submenu.add("🎯 Find by Interests")
 premium_submenu.add("⬅ Back to Menu")
 
 def get_main_menu(uid):
@@ -926,7 +927,135 @@ async def find_city(message: types.Message):
         await message.answer(f"🔄 Looking for someone in {my_city}...", reply_markup=types.ReplyKeyboardRemove())
         asyncio.create_task(queue_timeout(uid))
 
-@dp.message_handler(text="🔁 Reconnect")
+@dp.message_handler(text="�📍 Find Man in My City")
+async def find_man_city(message: types.Message):
+    uid = message.from_user.id
+    
+    if not is_premium(uid):
+        if uid not in upsell_shown:
+            upsell_shown.add(uid)
+            await message.answer("⭐ This feature requires Premium.", reply_markup=upsell_kb)
+            return
+        return await message.answer("⭐ This feature requires Premium.")
+    
+    cur.execute("SELECT city FROM users WHERE user_id=%s", (uid,))
+    row = cur.fetchone()
+    if not row or not row[0]:
+        return await message.answer("⚠️ You haven't set your city yet! Go to 👤 Profile.")
+    
+    my_city = row[0]
+    
+    if uid in active_chats or uid in waiting_queue:
+        return await message.answer("❌ Finish your current chat first.")
+    
+    blocked_users = get_blocked_users(uid)
+    
+    cur.execute("""
+        SELECT user_id, report_count, reputation_score FROM users
+        WHERE user_id != %s
+          AND city = %s
+          AND gender = 'Male'
+          AND user_id NOT IN %s
+          AND user_id NOT IN (
+              SELECT unnest(blocked_users) FROM users WHERE user_id = %s
+          )
+          AND NOT (%s = ANY(COALESCE(blocked_users, '{}')))
+          AND banned = false
+    """, (uid, my_city, tuple(blocked_users) if blocked_users else (0,), uid, uid))
+    
+    candidates = cur.fetchall()
+    preferred = []
+    
+    for r in candidates:
+        pid = r[0]
+        rpt = r[1] or 0
+        score = r[2] or 0
+        
+        if pid not in waiting_queue: continue
+        
+        if rpt >= 5: continue
+        if rpt >= 3: continue
+        if score < 0: continue
+        
+        preferred.append((pid, score))
+    
+    if preferred:
+        preferred.sort(key=lambda x: x[1], reverse=True)
+        top_n = max(1, int(len(preferred) * 0.75))
+        partner = random.choice(preferred[:top_n])[0]
+        
+        waiting_queue.discard(partner)
+        await connect_users(uid, partner)
+    else:
+        waiting_queue.add(uid)
+        await message.answer(f"🔄 Looking for a man in {my_city}...", reply_markup=types.ReplyKeyboardRemove())
+        asyncio.create_task(queue_timeout(uid))
+
+@dp.message_handler(text="👩📍 Find Woman in My City")
+async def find_woman_city(message: types.Message):
+    uid = message.from_user.id
+    
+    if not is_premium(uid):
+        if uid not in upsell_shown:
+            upsell_shown.add(uid)
+            await message.answer("⭐ This feature requires Premium.", reply_markup=upsell_kb)
+            return
+        return await message.answer("⭐ This feature requires Premium.")
+    
+    cur.execute("SELECT city FROM users WHERE user_id=%s", (uid,))
+    row = cur.fetchone()
+    if not row or not row[0]:
+        return await message.answer("⚠️ You haven't set your city yet! Go to 👤 Profile.")
+    
+    my_city = row[0]
+    
+    if uid in active_chats or uid in waiting_queue:
+        return await message.answer("❌ Finish your current chat first.")
+    
+    blocked_users = get_blocked_users(uid)
+    
+    cur.execute("""
+        SELECT user_id, report_count, reputation_score FROM users
+        WHERE user_id != %s
+          AND city = %s
+          AND gender = 'Female'
+          AND user_id NOT IN %s
+          AND user_id NOT IN (
+              SELECT unnest(blocked_users) FROM users WHERE user_id = %s
+          )
+          AND NOT (%s = ANY(COALESCE(blocked_users, '{}')))
+          AND banned = false
+    """, (uid, my_city, tuple(blocked_users) if blocked_users else (0,), uid, uid))
+    
+    candidates = cur.fetchall()
+    preferred = []
+    
+    for r in candidates:
+        pid = r[0]
+        rpt = r[1] or 0
+        score = r[2] or 0
+        
+        if pid not in waiting_queue: continue
+        
+        if rpt >= 5: continue
+        if rpt >= 3: continue
+        if score < 0: continue
+        
+        preferred.append((pid, score))
+    
+    if preferred:
+        preferred.sort(key=lambda x: x[1], reverse=True)
+        top_n = max(1, int(len(preferred) * 0.75))
+        partner = random.choice(preferred[:top_n])[0]
+        
+        waiting_queue.discard(partner)
+        await connect_users(uid, partner)
+    else:
+        waiting_queue.add(uid)
+        await message.answer(f"🔄 Looking for a woman in {my_city}...", reply_markup=types.ReplyKeyboardRemove())
+        asyncio.create_task(queue_timeout(uid))
+
+@dp.message_handler(text="�🔁 Reconnect")
 async def reconnect(message: types.Message):
     uid = message.from_user.id
     
