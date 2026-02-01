@@ -236,6 +236,10 @@ def get_main_menu(uid):
 @dp.message_handler(text="💎 Premium Search")
 async def open_premium_menu(message: types.Message):
     uid = message.from_user.id
+    
+    if uid in active_chats or uid in waiting_queue:
+        return await message.answer("❌ Finish your current chat/search first.")
+
     if not is_premium(uid):
         return await message.answer("⭐ This feature requires Premium.")
     await message.answer("💎 Choose an option:", reply_markup=premium_submenu)
@@ -302,7 +306,7 @@ async def profile(message: types.Message):
         
         age, gender, city, country, interests, premium_until = row
         
-        premium_text = "⭐ Active" if premium_until and premium_until > datetime.utcnow() else "❌ Not Active"
+        premium_text = "⭐ Active" if premium_until and premium_until > datetime.now() else "❌ Not Active"
         interests_text = interests if interests else "Not set"
         
         profile_text = (
