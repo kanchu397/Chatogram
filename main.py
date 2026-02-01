@@ -109,7 +109,7 @@ async def queue_timeout(uid):
     if uid in waiting_queue:
         waiting_queue.discard(uid)
         try:
-            await bot.send_message(uid, "❌ No users active right now. Please try again later.", reply_markup=main_menu)
+            await bot.send_message(uid, "❌ No users active right now. Please try again later.", reply_markup=get_main_menu(uid))
         except Exception:
             pass
 
@@ -128,12 +128,12 @@ async def end_chat(user1, user2, notify_user1=True, notify_user2=True):
     # Notify users
     if notify_user1:
         try:
-            await bot.send_message(user1, "❌ Chat ended.", reply_markup=main_menu)
+            await bot.send_message(user1, "❌ Chat ended.", reply_markup=get_main_menu(user1))
         except: pass
     
     if notify_user2:
         try:
-            await bot.send_message(user2, "❌ Chat ended.", reply_markup=main_menu)
+            await bot.send_message(user2, "❌ Chat ended.", reply_markup=get_main_menu(user2))
         except: pass
 
 async def connect_users(user1, user2):
@@ -218,13 +218,31 @@ async def connect_users(user1, user2):
 
 # ================= MENUS =================
 
-main_menu = ReplyKeyboardMarkup(resize_keyboard=True)
-main_menu.add("🔍 Find Chat")
-main_menu.add("👨 Find a Man", "👩 Find a Woman")
-main_menu.add("🎯 Find by Interests", "🏙 Find in My City")
-main_menu.add("⭐ Premium", "👤 Profile")
-main_menu.add("🎁 Invite & Earn", "📜 Rules")
-main_menu.add("⚙ Settings", "🔁 Reconnect")
+premium_submenu = ReplyKeyboardMarkup(resize_keyboard=True)
+premium_submenu.add("👨 Find a Man", "👩 Find a Woman")
+premium_submenu.add("🎯 Find by Interests", "🏙 Find in My City")
+premium_submenu.add("⬅ Back to Menu")
+
+def get_main_menu(uid):
+    menu = ReplyKeyboardMarkup(resize_keyboard=True)
+    menu.add("🔍 Find Chat")
+    if is_premium(uid):
+        menu.add("💎 Premium Search")
+    menu.add("⭐ Premium", "👤 Profile")
+    menu.add("🎁 Invite & Earn", "📜 Rules")
+    menu.add("⚙ Settings", "🔁 Reconnect")
+    return menu
+
+@dp.message_handler(text="💎 Premium Search")
+async def open_premium_menu(message: types.Message):
+    uid = message.from_user.id
+    if not is_premium(uid):
+        return await message.answer("⭐ This feature requires Premium.")
+    await message.answer("💎 Choose an option:", reply_markup=premium_submenu)
+
+@dp.message_handler(text="⬅ Back to Menu")
+async def back_to_main_menu(message: types.Message):
+    await message.answer("🏠 Main Menu", reply_markup=get_main_menu(message.from_user.id))
 
 chat_kb = ReplyKeyboardMarkup(resize_keyboard=True)
 chat_kb.add("🚫 Block", "🚨 Report")
@@ -263,7 +281,7 @@ async def start(message: types.Message):
         onboarding_state[uid] = "age"
         return await message.answer("Welcome! Let's set up your profile.\n\n🎂 Enter your age:")
     
-    await message.answer("Welcome back!", reply_markup=main_menu)
+    await message.answer("Welcome back!", reply_markup=get_main_menu(uid))
 
 # ================= PROFILE MENU =================
 
@@ -297,7 +315,7 @@ async def profile(message: types.Message):
             f"⭐ Premium: {premium_text}"
         )
         
-        await message.answer(profile_text, parse_mode="Markdown", reply_markup=main_menu)
+        await message.answer(profile_text, parse_mode="Markdown", reply_markup=get_main_menu(uid))
     except Exception as e:
         logging.error(f"Profile error: {e}")
         await message.answer("❌ Error loading profile.")
@@ -373,9 +391,9 @@ async def interests_done(callback: types.CallbackQuery):
         
         if uid in onboarding_state:
             del onboarding_state[uid]
-            await callback.message.answer("✅ Profile complete!", reply_markup=main_menu)
+            await callback.message.answer("✅ Profile complete!", reply_markup=get_main_menu(uid))
         else:
-            await callback.message.answer(f"✅ Interests updated!\n\n🎯 {interests_str}", reply_markup=main_menu)
+            await callback.message.answer(f"✅ Interests updated!\n\n🎯 {interests_str}", reply_markup=get_main_menu(uid))
     except Exception as e:
         logging.error(f"Interests done error: {e}")
         await callback.message.answer("❌ Error saving interests.")
@@ -656,14 +674,14 @@ async def stop_chat(message: types.Message):
         partner = active_chats[uid]
         await end_chat(uid, partner)
     else:
-        await message.answer("❌ You are not in a chat.", reply_markup=main_menu)
+        await message.answer("❌ You are not in a chat.", reply_markup=get_main_menu(uid))
 
 @dp.message_handler(text="➡ Next")
 async def next_chat(message: types.Message):
     uid = message.from_user.id
     
     if uid not in active_chats:
-        return await message.answer("❌ You are not in a chat.", reply_markup=main_menu)
+        return await message.answer("❌ You are not in a chat.", reply_markup=get_main_menu(uid))
     
     partner = active_chats[uid]
     await end_chat(uid, partner)
@@ -687,7 +705,7 @@ async def block_user(message: types.Message):
         """, (partner, uid, partner))
         
         await end_chat(uid, partner)
-        await message.answer("🚫 User blocked.", reply_markup=main_menu)
+        await message.answer("🚫 User blocked.", reply_markup=get_main_menu(uid))
     except Exception as e:
         logging.error(f"Block error: {e}")
         await message.answer("❌ Error blocking user.")
@@ -732,7 +750,7 @@ async def report_submit(callback: types.CallbackQuery):
         if check_and_auto_ban(partner):
             await bot.send_message(partner, "🚫 You have been banned due to multiple reports.")
         
-        await callback.message.answer("✅ Report submitted. Thank you.", reply_markup=main_menu)
+        await callback.message.answer("✅ Report submitted. Thank you.", reply_markup=get_main_menu(uid))
     except Exception as e:
         logging.error(f"Report error: {e}")
         await callback.message.answer("❌ Error submitting report.")
@@ -750,9 +768,9 @@ async def stop_command(message: types.Message):
         await end_chat(uid, partner)
     elif uid in waiting_queue:
         waiting_queue.discard(uid)
-        await message.answer("❌ Search cancelled.", reply_markup=main_menu)
+        await message.answer("❌ Search cancelled.", reply_markup=get_main_menu(uid))
     else:
-        await message.answer("❌ You are not in a chat or searching.", reply_markup=main_menu)
+        await message.answer("❌ You are not in a chat or searching.", reply_markup=get_main_menu(uid))
 
 # ================= /NEXT COMMAND =================
 
@@ -761,7 +779,7 @@ async def next_command(message: types.Message):
     uid = message.from_user.id
     
     if uid not in active_chats:
-        return await message.answer("❌ You are not in a chat.", reply_markup=main_menu)
+        return await message.answer("❌ You are not in a chat.", reply_markup=get_main_menu(uid))
     
     partner = active_chats[uid]
     await end_chat(uid, partner)
@@ -872,7 +890,7 @@ async def successful_payment(message: types.Message):
         WHERE user_id = %s
     """, (days, message.from_user.id))
     
-    await message.answer(f"⭐ Premium activated for {days} days!")
+    await message.answer(f"⭐ Premium activated for {days} days!", reply_markup=get_main_menu(message.from_user.id))
 
 # ================= ADMIN =================
 
@@ -886,7 +904,7 @@ async def save_profile_edit(message: types.Message):
             f"UPDATE users SET {field}=%s WHERE user_id=%s",
             (value, message.from_user.id)
         )
-        await message.answer(f"✅ {field.capitalize()} updated!", reply_markup=main_menu)
+        await message.answer(f"✅ {field.capitalize()} updated!", reply_markup=get_main_menu(message.from_user.id))
     except Exception as e:
         await message.answer("❌ Error updating profile.")
 
