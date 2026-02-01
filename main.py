@@ -19,6 +19,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_ID")
 DATABASE_URL = os.getenv("DATABASE_URL")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable is required")
@@ -71,6 +72,14 @@ try:
     except Exception as e:
         logging.error(f"DB Schema Update Error: {e}")
 
+    # Referral Schema Check
+    try:
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_count INTEGER DEFAULT 0")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_completed BOOLEAN DEFAULT FALSE")
+    except Exception as e:
+        logging.error(f"DB Schema Update Error (Referral): {e}")
+
 except Exception as e:
     logging.error(f"Database connection failed: {e}")
     exit(1)
@@ -90,6 +99,65 @@ async def reputation_decay_task():
             cur.execute("UPDATE users SET reputation_score = GREATEST(0, reputation_score - 1)")
         except Exception as e:
             logging.error(f"Reputation decay error: {e}")
+
+async def check_referral_reward(user_id):
+    """Check if user completed onboarding and reward referrer."""
+    try:
+        cur.execute("""
+            SELECT referred_by, referral_completed, age, gender, city, interests 
+            FROM users WHERE user_id=%s
+        """, (user_id,))
+        row = cur.fetchone()
+        
+        if not row: return
+        referred_by, completed, age, gender, city, interests = row
+        
+        # Conditions: Has referrer, not yet counted, and profile full
+        if not referred_by or completed:
+            return
+            
+        if not (age and gender and city and interests):
+            return
+
+        # Mark as completed to prevent double counting
+        cur.execute("UPDATE users SET referral_completed=true WHERE user_id=%s", (user_id,))
+        
+        # Increment referrer count
+        cur.execute("""
+            UPDATE users 
+            SET referral_count = referral_count + 1 
+            WHERE user_id=%s 
+            RETURNING referral_count
+        """, (referred_by,))
+        
+        res = cur.fetchone()
+        if not res: return
+        count = res[0]
+        
+        # Reward Logic
+        reward = None
+        if count == 1: reward = timedelta(minutes=30)
+        elif count == 3: reward = timedelta(hours=3)
+        elif count == 5: reward = timedelta(days=1)
+        elif count == 10: reward = timedelta(days=3)
+        
+        if reward:
+            # Stack rewards
+            cur.execute("""
+                UPDATE users 
+                SET premium_until = GREATEST(COALESCE(premium_until, NOW()), NOW()) + %s 
+                WHERE user_id=%s
+            """, (reward, referred_by))
+            
+            try:
+                await bot.send_message(
+                    referred_by, 
+                    f"🎉 Referral Bonus! You invited {count} friends.\n⭐ Premium extended!"
+                )
+            except: pass
+            
+    except Exception as e:
+        logging.error(f"Referral check error: {e}")
 
 def is_premium(user_id):
     try:
@@ -347,6 +415,8 @@ def get_interest_kb(selected_interests):
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
     uid = message.from_user.id
+    args = message.get_args()
+    
     cur.execute("SELECT age, banned FROM users WHERE user_id=%s", (uid,))
     row = cur.fetchone()
 
@@ -354,10 +424,20 @@ async def start(message: types.Message):
         return await message.answer("🚫 You have been banned from using this bot.")
 
     if not row:
+        # Check referral
+        referrer_id = None
+        if args and args.isdigit():
+            possible_ref = int(args)
+            if possible_ref != uid:
+                # Validate referrer exists
+                cur.execute("SELECT 1 FROM users WHERE user_id=%s", (possible_ref,))
+                if cur.fetchone():
+                    referrer_id = possible_ref
+
         cur.execute("""
-            INSERT INTO users (user_id, username, age, gender, city, country, interests, blocked_users, premium_until)
-            VALUES (%s, %s, 0, '', '', '', '', '{}', NOW() + INTERVAL '2 hours')
-        """, (uid, message.from_user.username or ""))
+            INSERT INTO users (user_id, username, age, gender, city, country, interests, blocked_users, premium_until, referred_by)
+            VALUES (%s, %s, 0, '', '', '', '', '{}', NOW() + INTERVAL '2 hours', %s)
+        """, (uid, message.from_user.username or "", referrer_id))
         
         onboarding_state[uid] = "age"
         return await message.answer("Welcome! Let's set up your profile.\n\n🎂 Enter your age:")
@@ -494,6 +574,9 @@ async def interests_done(callback: types.CallbackQuery):
             await callback.message.answer("✅ Profile complete!", reply_markup=get_main_menu(uid))
         else:
             await callback.message.answer(f"✅ Interests updated!\n\n🎯 {interests_str}", reply_markup=get_main_menu(uid))
+            
+        await check_referral_reward(uid)
+            
     except Exception as e:
         logging.error(f"Interests done error: {e}")
         await callback.message.answer("❌ Error saving interests.")
@@ -720,32 +803,19 @@ async def find_interests(message: types.Message):
     if not is_premium(uid):
         if uid not in upsell_shown:
             upsell_shown.add(uid)
-            await message.answer(
-                "⭐ *Unlock Premium Logic*\n\n"
-                "• Find by Gender (Man/Woman)\n"
-                "• Find by Interests & City\n"
-                "• See Partner Details\n"
-                "• No Ads & Priority Support",
-                parse_mode="Markdown",
-                reply_markup=upsell_kb
-            )
+            await message.answer("⭐ This feature requires Premium.", reply_markup=upsell_kb)
             return
-        return await message.answer("⭐ This feature requires Premium.\nType /premium to upgrade.")
+        return await message.answer("⭐ This feature requires Premium.")
     
-    cur.execute("SELECT banned, interests FROM users WHERE user_id=%s", (uid,))
+    cur.execute("SELECT interests FROM users WHERE user_id=%s", (uid,))
     row = cur.fetchone()
-    if row and row[0]:
-        return await message.answer("🚫 You have been banned.")
+    if not row or not row[0]:
+        return await message.answer("⚠️ You haven't set your interests yet! Go to 👤 Profile.")
     
-    my_interests = row[1] if row and row[1] else ""
-    if not my_interests:
-        return await message.answer("❌ Set your interests first in ⚙ Settings.")
+    my_interests = row[0]
     
-    if uid in active_chats:
-        return await message.answer("❌ Already in a chat.")
-    
-    if uid in waiting_queue:
-        return await message.answer("⏳ Already searching...")
+    if uid in active_chats or uid in waiting_queue:
+        return await message.answer("❌ Finish your current chat first.")
     
     blocked_users = get_blocked_users(uid)
     
@@ -789,7 +859,7 @@ async def find_interests(message: types.Message):
         await connect_users(uid, partner)
     else:
         waiting_queue.add(uid)
-        await message.answer("🔄 Matching with a partner...", reply_markup=types.ReplyKeyboardRemove())
+        await message.answer("🔄 Looking for someone with shared interests...", reply_markup=types.ReplyKeyboardRemove())
         asyncio.create_task(queue_timeout(uid))
 
 @dp.message_handler(text="🏙 Find in My City")
@@ -799,32 +869,19 @@ async def find_city(message: types.Message):
     if not is_premium(uid):
         if uid not in upsell_shown:
             upsell_shown.add(uid)
-            await message.answer(
-                "⭐ *Unlock Premium Logic*\n\n"
-                "• Find by Gender (Man/Woman)\n"
-                "• Find by Interests & City\n"
-                "• See Partner Details\n"
-                "• No Ads & Priority Support",
-                parse_mode="Markdown",
-                reply_markup=upsell_kb
-            )
+            await message.answer("⭐ This feature requires Premium.", reply_markup=upsell_kb)
             return
-        return await message.answer("⭐ This feature requires Premium.\nType /premium to upgrade.")
+        return await message.answer("⭐ This feature requires Premium.")
     
-    cur.execute("SELECT banned, city FROM users WHERE user_id=%s", (uid,))
+    cur.execute("SELECT city FROM users WHERE user_id=%s", (uid,))
     row = cur.fetchone()
-    if row and row[0]:
-        return await message.answer("🚫 You have been banned.")
+    if not row or not row[0]:
+        return await message.answer("⚠️ You haven't set your city yet! Go to 👤 Profile.")
     
-    my_city = row[1] if row and row[1] else ""
-    if not my_city:
-        return await message.answer("❌ Set your city first in ⚙ Settings.")
+    my_city = row[0]
     
-    if uid in active_chats:
-        return await message.answer("❌ Already in a chat.")
-    
-    if uid in waiting_queue:
-        return await message.answer("⏳ Already searching...")
+    if uid in active_chats or uid in waiting_queue:
+        return await message.answer("❌ Finish your current chat first.")
     
     blocked_users = get_blocked_users(uid)
     
@@ -866,39 +923,37 @@ async def find_city(message: types.Message):
         await connect_users(uid, partner)
     else:
         waiting_queue.add(uid)
-        await message.answer("🔄 Matching with a partner...", reply_markup=types.ReplyKeyboardRemove())
+        await message.answer(f"🔄 Looking for someone in {my_city}...", reply_markup=types.ReplyKeyboardRemove())
         asyncio.create_task(queue_timeout(uid))
 
-# ================= RECONNECT =================
-
 @dp.message_handler(text="🔁 Reconnect")
-@dp.message_handler(commands=["reconnect"])
 async def reconnect(message: types.Message):
     uid = message.from_user.id
     
     if uid in active_chats:
         return await message.answer("❌ You are already in a chat.")
     
-    if uid in waiting_queue:
-        return await message.answer("❌ You are already searching.")
-    
     try:
         cur.execute("SELECT last_chat_user_id FROM users WHERE user_id=%s", (uid,))
         row = cur.fetchone()
         
         if not row or not row[0]:
-            return await message.answer("❌ No previous chat found.")
+            return await message.answer("❌ No previous chat found to reconnect.")
         
         partner_id = row[0]
         
-        if partner_id in active_chats or partner_id in waiting_queue:
-            return await message.answer("❌ Partner is busy.")
+        cur.execute("SELECT is_online, blocked_users FROM users WHERE user_id=%s", (partner_id,))
+        p_row = cur.fetchone()
         
-        blocked_users = get_blocked_users(uid)
-        if partner_id in blocked_users:
-            return await message.answer("❌ Cannot reconnect with blocked user.")
+        if not p_row:
+            return await message.answer("❌ User not found.")
+            
+        is_online = p_row[0]
+        partner_blocked = p_row[1] or []
         
-        partner_blocked = get_blocked_users(partner_id)
+        if not is_online:
+            return await message.answer("❌ User is offline.")
+            
         if uid in partner_blocked:
             return await message.answer("❌ Cannot reconnect.")
         
@@ -907,9 +962,9 @@ async def reconnect(message: types.Message):
     
     except Exception as e:
         logging.error(f"Reconnect error: {e}")
-        await message.answer("❌ Reconnect failed.")
+        await message.answer("❌ Error reconnecting.")
 
-# ================= CHAT ACTIONS =================
+# ================= ACTIONS =================
 
 @dp.message_handler(text="⛔ Stop")
 async def stop_chat(message: types.Message):
@@ -967,29 +1022,6 @@ async def next_chat(message: types.Message):
     
     await find_chat(message)
 
-@dp.message_handler(text="🚫 Block")
-async def block_user(message: types.Message):
-    uid = message.from_user.id
-    
-    if uid not in active_chats:
-        return await message.answer("❌ No active chat to block.")
-    
-    partner = active_chats[uid]
-    
-    try:
-        cur.execute("""
-            UPDATE users
-            SET blocked_users = array_append(blocked_users, %s)
-            WHERE user_id = %s AND NOT (%s = ANY(blocked_users))
-        """, (partner, uid, partner))
-        
-        update_reputation(partner, -5)
-        await end_chat(uid, partner)
-        await message.answer("🚫 User blocked.", reply_markup=get_main_menu(uid))
-    except Exception as e:
-        logging.error(f"Block error: {e}")
-        await message.answer("❌ Error blocking user.")
-
 @dp.message_handler(text="🚨 Report")
 async def report_init(message: types.Message):
     uid = message.from_user.id
@@ -1041,7 +1073,30 @@ async def report_submit(callback: types.CallbackQuery):
     
     await callback.answer()
 
-# ================= /STOP COMMAND =================
+@dp.message_handler(text="🚫 Block")
+async def block_user(message: types.Message):
+    uid = message.from_user.id
+    
+    if uid not in active_chats:
+        return await message.answer("❌ No active chat to block.")
+    
+    partner = active_chats[uid]
+    
+    try:
+        cur.execute("""
+            UPDATE users
+            SET blocked_users = array_append(blocked_users, %s)
+            WHERE user_id = %s AND NOT (%s = ANY(blocked_users))
+        """, (partner, uid, partner))
+        
+        update_reputation(partner, -5)
+        await end_chat(uid, partner)
+        await message.answer("🚫 User blocked.", reply_markup=get_main_menu(uid))
+    except Exception as e:
+        logging.error(f"Block error: {e}")
+        await message.answer("❌ Error blocking user.")
+
+# ================= COMMANDS =================
 
 @dp.message_handler(commands=["stop"])
 async def stop_command(message: types.Message):
@@ -1066,8 +1121,6 @@ async def stop_command(message: types.Message):
         await message.answer("❌ Search cancelled.", reply_markup=get_main_menu(uid))
     else:
         await message.answer("❌ You are not in a chat or searching.", reply_markup=get_main_menu(uid))
-
-# ================= /NEXT COMMAND =================
 
 @dp.message_handler(commands=["next"])
 async def next_command(message: types.Message):
@@ -1103,8 +1156,6 @@ async def next_command(message: types.Message):
     await end_chat(uid, partner)
     
     await find_chat(message)
-
-# ================= /SHAREPROFILE COMMAND =================
 
 @dp.message_handler(commands=["shareprofile"])
 async def shareprofile_init(message: types.Message):
@@ -1223,6 +1274,9 @@ async def save_profile_edit(message: types.Message):
             (value, message.from_user.id)
         )
         await message.answer(f"✅ {field.capitalize()} updated!", reply_markup=get_main_menu(message.from_user.id))
+        
+        await check_referral_reward(message.from_user.id)
+        
     except Exception as e:
         await message.answer("❌ Error updating profile.")
 
@@ -1290,7 +1344,14 @@ async def onboarding_handler(message: types.Message):
 @dp.message_handler(commands=["invite"])
 async def invite(message: types.Message):
     link = f"https://t.me/{(await bot.get_me()).username}?start={message.from_user.id}"
-    await message.answer(f"Invite friends:\n{link}\n\n🎁 Referral rewards coming soon.")
+    await message.answer(
+        f"Invite friends and earn Premium!\n{link}\n\n"
+        "🎁 Rewards:\n"
+        "• 1 Friend: 30 mins Premium\n"
+        "• 3 Friends: 3 hours\n"
+        "• 5 Friends: 1 day\n"
+        "• 10 Friends: 3 days"
+    )
 
 @dp.message_handler(text="📜 Rules")
 @dp.message_handler(commands=["rules"])
@@ -1312,6 +1373,8 @@ async def chat_relay(message: types.Message):
             await end_chat(uid, partner)
 
 async def on_startup(dp):
+    if WEBHOOK_URL:
+        await bot.set_webhook(WEBHOOK_URL)
     asyncio.create_task(reputation_decay_task())
     await bot.set_my_commands([
         types.BotCommand("start", "Start/Restart"),
