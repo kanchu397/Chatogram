@@ -42,6 +42,7 @@ share_profile_state = {}  # {user_id: "awaiting_confirmation"} - for /shareprofi
 
 upsell_shown = set()      # {user_id} - Track upsells
 expiry_reminded = set()   # {user_id} - Track reminders
+safety_shown = set()      # {user_id} - Track safety notices
 
 upsell_kb = ReplyKeyboardMarkup(resize_keyboard=True)
 upsell_kb.add("⭐ Buy Premium", "⬅ Back to Menu")
@@ -174,6 +175,19 @@ async def connect_users(user1, user2):
     
     # Notify both users
     try:
+        # ONE-TIME SAFETY NOTICE
+        for u in [user1, user2]:
+            if u not in safety_shown:
+                safety_shown.add(u)
+                await bot.send_message(
+                    u,
+                    "🛡 *Safety Notice*\n\n"
+                    "• Do not share financial info.\n"
+                    "• Report suspicious behavior.\n"
+                    "• Block abusive users immediately.",
+                    parse_mode="Markdown"
+                )
+
         p1_badge = " (⭐ Premium User)" if is_premium(user1) else ""
         p2_badge = " (⭐ Premium User)" if is_premium(user2) else ""
         
@@ -469,19 +483,40 @@ async def find_chat(message: types.Message):
     blocked_users = get_blocked_users(uid)
     
     cur.execute("""
-        SELECT user_id FROM users
+        SELECT user_id, report_count FROM users
         WHERE user_id != %s
           AND user_id NOT IN %s
           AND user_id NOT IN (
               SELECT unnest(blocked_users) FROM users WHERE user_id = %s
           )
+          AND NOT (%s = ANY(COALESCE(blocked_users, '{}')))
           AND banned = false
-    """, (uid, tuple(blocked_users) if blocked_users else (0,), uid))
+    """, (uid, tuple(blocked_users) if blocked_users else (0,), uid, uid))
     
-    available = [r[0] for r in cur.fetchall() if r[0] in waiting_queue]
+    candidates = cur.fetchall()
+    available = []
     
+    for r in candidates:
+        pid = r[0]
+        if pid not in waiting_queue: continue
+        
+        # Safety Priority System
+        rpt = r[1] or 0
+        if rpt >= 5: continue  # Exclude dangerous users
+        
+        # Reduced priority for >=3 reports (simple filter for now)
+        # For random chat, we might still allow them but maybe later
+        # For now, we'll allow them in random chat but they are "risky"
+        available.append(pid)
+        
     if available:
-        partner = random.choice(available)
+        # Prioritize safer users if possible
+        safe_users = [pid for pid in available if (next((x[1] for x in candidates if x[0] == pid), 0) or 0) < 3]
+        if safe_users:
+            partner = random.choice(safe_users)
+        else:
+            partner = random.choice(available)
+            
         waiting_queue.discard(partner)
         await connect_users(uid, partner)
     else:
@@ -522,17 +557,30 @@ async def find_man(message: types.Message):
     blocked_users = get_blocked_users(uid)
     
     cur.execute("""
-        SELECT user_id FROM users
+        SELECT user_id, report_count FROM users
         WHERE user_id != %s
           AND gender = 'Male'
           AND user_id NOT IN %s
           AND user_id NOT IN (
               SELECT unnest(blocked_users) FROM users WHERE user_id = %s
           )
+          AND NOT (%s = ANY(COALESCE(blocked_users, '{}')))
           AND banned = false
-    """, (uid, tuple(blocked_users) if blocked_users else (0,), uid))
+    """, (uid, tuple(blocked_users) if blocked_users else (0,), uid, uid))
     
-    available = [r[0] for r in cur.fetchall() if r[0] in waiting_queue]
+    candidates = cur.fetchall()
+    available = []
+    
+    for r in candidates:
+        pid = r[0]
+        if pid not in waiting_queue: continue
+        
+        # Safety Priority System
+        rpt = r[1] or 0
+        if rpt >= 5: continue  # Exclude dangerous users
+        if rpt >= 3: continue  # Exclude from premium matches
+        
+        available.append(pid)
     
     if available:
         partner = random.choice(available)
@@ -576,17 +624,30 @@ async def find_woman(message: types.Message):
     blocked_users = get_blocked_users(uid)
     
     cur.execute("""
-        SELECT user_id FROM users
+        SELECT user_id, report_count FROM users
         WHERE user_id != %s
           AND gender = 'Female'
           AND user_id NOT IN %s
           AND user_id NOT IN (
               SELECT unnest(blocked_users) FROM users WHERE user_id = %s
           )
+          AND NOT (%s = ANY(COALESCE(blocked_users, '{}')))
           AND banned = false
-    """, (uid, tuple(blocked_users) if blocked_users else (0,), uid))
+    """, (uid, tuple(blocked_users) if blocked_users else (0,), uid, uid))
     
-    available = [r[0] for r in cur.fetchall() if r[0] in waiting_queue]
+    candidates = cur.fetchall()
+    available = []
+    
+    for r in candidates:
+        pid = r[0]
+        if pid not in waiting_queue: continue
+        
+        # Safety Priority System
+        rpt = r[1] or 0
+        if rpt >= 5: continue  # Exclude dangerous users
+        if rpt >= 3: continue  # Exclude from premium matches
+        
+        available.append(pid)
     
     if available:
         partner = random.choice(available)
@@ -634,7 +695,7 @@ async def find_interests(message: types.Message):
     blocked_users = get_blocked_users(uid)
     
     cur.execute("""
-        SELECT user_id, interests FROM users
+        SELECT user_id, interests, report_count FROM users
         WHERE user_id != %s
           AND interests IS NOT NULL
           AND interests != ''
@@ -642,14 +703,20 @@ async def find_interests(message: types.Message):
           AND user_id NOT IN (
               SELECT unnest(blocked_users) FROM users WHERE user_id = %s
           )
+          AND NOT (%s = ANY(COALESCE(blocked_users, '{}')))
           AND banned = false
-    """, (uid, tuple(blocked_users) if blocked_users else (0,), uid))
+    """, (uid, tuple(blocked_users) if blocked_users else (0,), uid, uid))
     
     my_set = set(my_interests.split(", "))
     candidates = []
     for r in cur.fetchall():
-        partner_id, partner_interests = r
+        partner_id, partner_interests, report_count = r
         if partner_id in waiting_queue:
+            # Safety Priority System
+            rpt = report_count or 0
+            if rpt >= 5: continue  # Exclude dangerous users
+            if rpt >= 3: continue  # Exclude from premium matches
+
             partner_set = set(partner_interests.split(", "))
             if my_set & partner_set:
                 candidates.append(partner_id)
@@ -700,17 +767,30 @@ async def find_city(message: types.Message):
     blocked_users = get_blocked_users(uid)
     
     cur.execute("""
-        SELECT user_id FROM users
+        SELECT user_id, report_count FROM users
         WHERE user_id != %s
           AND city = %s
           AND user_id NOT IN %s
           AND user_id NOT IN (
               SELECT unnest(blocked_users) FROM users WHERE user_id = %s
           )
+          AND NOT (%s = ANY(COALESCE(blocked_users, '{}')))
           AND banned = false
-    """, (uid, my_city, tuple(blocked_users) if blocked_users else (0,), uid))
+    """, (uid, my_city, tuple(blocked_users) if blocked_users else (0,), uid, uid))
     
-    available = [r[0] for r in cur.fetchall() if r[0] in waiting_queue]
+    candidates = cur.fetchall()
+    available = []
+    
+    for r in candidates:
+        pid = r[0]
+        if pid not in waiting_queue: continue
+        
+        # Safety Priority System
+        rpt = r[1] or 0
+        if rpt >= 5: continue  # Exclude dangerous users
+        if rpt >= 3: continue  # Exclude from premium matches
+        
+        available.append(pid)
     
     if available:
         partner = random.choice(available)
@@ -843,8 +923,10 @@ async def report_submit(callback: types.CallbackQuery):
             WHERE user_id = %s
         """, (partner,))
         
-        if check_and_auto_ban(partner):
-            await bot.send_message(partner, "🚫 You have been banned due to multiple reports.")
+        logging.info(f"REPORT: {uid} reported {partner} for {callback.data} at {datetime.now()}")
+        
+        # if check_and_auto_ban(partner):
+        #    await bot.send_message(partner, "🚫 You have been banned due to multiple reports.")
         
         await callback.message.answer("✅ Report submitted. Thank you.", reply_markup=get_main_menu(uid))
     except Exception as e:
